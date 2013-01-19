@@ -25,7 +25,6 @@
 import os
 import datetime
 import tempfile
-import votable_mod
 
 from django.http import HttpResponse, HttpResponseRedirect
 from django.template import Context, loader
@@ -37,6 +36,7 @@ from image import fitsimage, directory_mod
 from pogs.models import Galaxy
 from database.database_support_core import AREA, AREA_USER, GALAXY, DOCMOSIS_TASK, DOCMOSIS_TASK_GALAXY, IMAGE_FILTERS_USED, FILTER
 from database.boinc_database_support_core import BOINC_USER
+from docmosis.votable_mod import getVOData
 
 ENGINE = create_engine(DB_LOGIN)
 BOINC_ENGINE = create_engine(BOINC_DB_LOGIN)
@@ -246,17 +246,17 @@ def userStellarium(request, email_addr):
 
     pogs_connection = ENGINE.connect()
     for galaxy in user_galaxies(pogs_connection, user.id):
-        galaxy_base = galaxy.name
-        if galaxy.name[-1:].islower():
-            galaxy_base = name[:-1]
-        vomap = votable_mod.getVOData(galaxy_base)
+        galaxy_real = galaxy.name
+        if galaxy_real[-1:].islower():
+            galaxy_real = galaxy_real[:-1]
+        vomap = getVOData(galaxy_real)
         jsonstr = jsonstr + '"POGS ' + galaxy.name + '":{'
-        jsonstr = jsonstr + '"Version": "' + str(galaxy.version) + '",'
+        jsonstr = jsonstr + '"Version": "' + str(galaxy.version_number) + '",'
         jsonstr = jsonstr + '"RA": "' + str(vomap['ra_eqj2000']) + '",'
         jsonstr = jsonstr + '"DE": "' + str(vomap['dec_eqj2000']) + '"'
         jsonstr = jsonstr + '},'
 
-    if galaxy.name[-1:] == ',':
+    if jsonstr[-1:] == ',':
         jsonstr = jsonstr[:-1]
     jsonstr = jsonstr + '}}'
     json_data = simplejson.dumps(simplejson.loads(jsonstr),indent=4)
