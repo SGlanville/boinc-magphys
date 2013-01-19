@@ -44,3 +44,9 @@ WORK_UNIT = Table('workunit',
     Column('name'            , String),
     Column('assimilate_state', BigInteger)
 )
+
+BOINC_USER = Table('user',
+    BOINC_METADATA,
+    Column('id'         , BigInteger, primary_key=True, autoincrement=True),
+    Column('email_addr' , String)
+)

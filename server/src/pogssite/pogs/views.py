@@ -25,18 +25,21 @@
 import os
 import datetime
 import tempfile
+import votable_mod
 
 from django.http import HttpResponse, HttpResponseRedirect
 from django.template import Context, loader
 from django.utils import simplejson
 from sqlalchemy.engine import create_engine
 from sqlalchemy.sql.expression import select, and_, not_
-from config import DJANGO_IMAGE_DIR, DB_LOGIN
+from config import DJANGO_IMAGE_DIR, DB_LOGIN, BOINC_DB_LOGIN
 from image import fitsimage, directory_mod
 from pogs.models import Galaxy
 from database.database_support_core import AREA, AREA_USER, GALAXY, DOCMOSIS_TASK, DOCMOSIS_TASK_GALAXY, IMAGE_FILTERS_USED, FILTER
+from database.boinc_database_support_core import BOINC_USER
 
 ENGINE = create_engine(DB_LOGIN)
+BOINC_ENGINE = create_engine(BOINC_DB_LOGIN)
 
 class GalaxyLine:
     def __init__(self):
@@ -229,6 +232,36 @@ def userGalaxyImage(request, userid, galaxy_id, colour):
     response['Content-Disposition'] = 'filename=\"' + imagePrefixName + '_' + colour + '.png\"'
     response['Expires'] = expires
     response['Cache-Control'] = "public, max-age=" + str(DELTA_SECONDS)
+    return response
+
+def userStellarium(request, email_addr):
+
+    boinc_connection = BOINC_ENGINE.connect()
+    query = select([BOINC_USER]).where(BOINC_USER.c.email_addr == email_addr)
+    user = boinc_connection.execute(query).first()
+
+    jsonstr = '{'
+    jsonstr = jsonstr + '"account" : "' + email_addr + '",'
+    jsonstr = jsonstr + '"galaxies":{'
+
+    pogs_connection = ENGINE.connect()
+    for galaxy in user_galaxies(pogs_connection, user.id):
+        galaxy_base = galaxy.name
+        if galaxy.name[-1:].islower():
+            galaxy_base = name[:-1]
+        vomap = votable_mod.getVOData(galaxy_base)
+        jsonstr = jsonstr + '"POGS ' + galaxy.name + '":{'
+        jsonstr = jsonstr + '"Version": "' + str(galaxy.version) + '",'
+        jsonstr = jsonstr + '"RA": "' + str(vomap['ra_eqj2000']) + '",'
+        jsonstr = jsonstr + '"DE": "' + str(vomap['dec_eqj2000']) + '"'
+        jsonstr = jsonstr + '},'
+
+    if galaxy.name[-1:] == ',':
+        jsonstr = jsonstr[:-1]
+    jsonstr = jsonstr + '}}'
+    json_data = simplejson.dumps(simplejson.loads(jsonstr),indent=4)
+    response = HttpResponse(json_data,content_type="application/json")
+
     return response
 
 def galaxy(request, galaxy_id):
