@@ -161,6 +161,7 @@ REGISTER = Table('register',
                  MAGPHYS_METADATA,
                  Column('register_id', BigInteger, primary_key=True, nullable=False),
                  Column('galaxy_name', String(128), nullable=False),
+                 Column('glaxy_name_fixed', String(128) nullabe = True)
                  Column('redshift', Numeric(7, 5), nullable=False),
                  Column('sigma', Numeric(3, 2), nullable=False),
                  Column('galaxy_type', String(10), nullable=False),
