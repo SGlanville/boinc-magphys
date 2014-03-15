@@ -61,7 +61,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
-//#include <cfenv>
+#include <cfenv>
+//#pragma fenv_access (on)
 
 #if defined(_WIN32)
 class Parser
@@ -91,7 +92,7 @@ protected:
 };
 #endif
 
-//#define READCL //Read CL From File Or Constant *KernelSource
+#define READCL //Read CL From File Or Constant *KernelSource
 
 // OpenCL kernel.
 #ifndef READCL
@@ -124,7 +125,7 @@ const char *kernelSource = "\n" \
 "	int nfilt_sfh;																																\n" \
 "	int nfilt_mix;																																\n" \
 "	int i_gal;																																	\n" \
-"	float df;																																	\n" \
+"	double df;																																	\n" \
 "	int n_sfh;																																	\n" \
 "	int n_ir;																																	\n" \
 "} clconstants_t;																																\n" \
@@ -483,9 +484,10 @@ const char *kernelSource = "\n" \
 // OpenCL implementation specific.
 //#define __CL_ENABLE_EXCEPTIONS
 // Number of models to batch for kernel thread work.
-#define CLMAX 524288 //262144   //Best if Power of 2
+#define CLMAX 262144   //262144=512*512=2^18 (Best if Power of 2)
 #define CLLOCAL_FIT 64
 #define CLLOCAL_RED 256
+#define CLLOCAL_RANGE 256
 #define CLBLOCKSIZE_RED 256
 
 #define NMAX 56
@@ -502,13 +504,6 @@ const char *kernelSource = "\n" \
 #define NPROP_SFH 24
 #define NPROP_IR 8
 #define MIN_HPBV 0.00001f
-
-// Identifier struct. Used to identify kernel thread to
-// a sfh and ir model combination.
-typedef struct clid {
-	unsigned short i_sfh;
-	unsigned short i_ir;
-} clid_t;
 
 // Struct to define arrays of indexes and models
 // used by kernel threads.
@@ -543,15 +538,10 @@ typedef struct clconstants {
 	int nfilt_sfh;
 	int nfilt_mix;
 	int i_gal;
-	float df;
+	double df;
 	int n_sfh;
 	int n_ir;
 } clconstants_t;
-
-// Array of identifier and model structs.
-static clid_t h_clids[CLMAX];
-//static clmodel_t h_clmodels[CLMAX];
-
 
 //Function prototypes for old FORTRAN functions.
 double get_cosmol_c(double h, double omega, double omega_lambda, double* q);
@@ -565,6 +555,7 @@ void degrade_hist(double delta, double min, double max, int nbin1, int * nbin2, 
 double get_hpbv(double hist1[], double hist2[], int nbin);
 
 void get_fexp3(char dstr[]);
+void print_fexp3(FILE * fitfp, double histvalue);
 void get_fsci(char dstr[]);
 
 double round_nup(double n, int p);
@@ -581,9 +572,11 @@ int main(int argc, char *argv[]){
 	//Required as windows default is 3 digit exponent.
 	_set_output_format(_TWO_DIGIT_EXPONENT);
 #endif
-//	#pragma STDC FENV_ACCESS ON
-//	fesetround(FE_UPWARD);
+	//fesetround(FE_TONEAREST);
 	static unsigned int withindf[CLDFSIZE];
+
+	static unsigned short cl_sfh[CLMAX];
+	static unsigned short cl_ir[CLMAX];
 
 	static double cl_chi2[CLMAX];
 	static double cl_prob[CLMAX];
@@ -593,9 +586,9 @@ int main(int argc, char *argv[]){
 	static unsigned short ibin_pmdust[CLMAX];
 
 	static double cl_sum[CLBLOCKSIZE_RED];
-	static double cl_min[CLBLOCKSIZE_RED];
-	static unsigned short cl_sfh[CLBLOCKSIZE_RED];
-	static unsigned short cl_ir[CLBLOCKSIZE_RED];
+	static double cl_minchi[CLBLOCKSIZE_RED];
+	static unsigned short cl_minsfh[CLBLOCKSIZE_RED];
+	static unsigned short cl_minir[CLBLOCKSIZE_RED];
 
 	int i, j, k, i_gal;
 	static int n_obs, n_models, ibin;
@@ -736,7 +729,6 @@ int main(int argc, char *argv[]){
 	stringstream ss;
 	string line;
 
-#if defined(_WIN32)
 	string filtername(filters, 0, 81);
 	Parser filterParser(filtername);
 	filterParser.Ignore("#", "\n");
@@ -757,27 +749,8 @@ int main(int argc, char *argv[]){
 			nfilt++;
 		}
 	}
-#else
-	infs.open(filters);
-	if (!infs.is_open()){
-		cerr << "Error opening filters file: " << filters << endl;
-		exit(-1);
-	}
-	nfilt = 0;
-	while (getline(infs, line)){
-		if (line[0] != '#'){
-			ss.str("");
-			ss.clear();
-			ss << line;
-			ss >> filt_name[nfilt] >> lambda_eff[nfilt] >> filt_id[nfilt] >> fit[nfilt];
-			nfilt++;
-		}
-	}
-	infs.close();
-#endif
 
 	//READ FILE WITH OBSERVATIONS:
-#if defined(_WIN32)
 	string obsname(obs, 0, 81);
 	Parser obsParser(obsname);
 	obsParser.Ignore("#", "\n");
@@ -803,30 +776,6 @@ int main(int argc, char *argv[]){
 		}
 
 	}
-#else
-	infs.open(obs);
-	if (!infs.is_open()){
-		cerr << "Error opening observations file: " << obs << endl;
-		exit(-1);
-	}
-	n_obs = 0;
-	while (getline(infs, line)){
-		if (line[0] != '#'){
-			if (n_obs == i_gal) {
-				ss.str("");
-				ss.clear();
-				ss << line;
-				ss >> gal_name >> redshift;
-				for (k = 0; k < nfilt; k++){
-					ss >> flux_obs[k] >> sigma[k];
-				}
-			}
-			n_obs++;
-		}
-	}
-	infs.close();
-
-#endif
 
 	//READ FILE WITH REDSHIFTS OF THE MODEL LIBRARIES
 	infs.open("zlibs.dat");
@@ -970,7 +919,6 @@ int main(int argc, char *argv[]){
 	// dust emission - irlib: infrared_dce08_z###.lbr
 	// --> nfilt_ir model absolute AB mags
 	// ---------------------------------------------------------------------------
-#if defined(_WIN32)
 	std::cout << "Reading SFH library..." << endl;
 
 	string sfhname(optlib, 0, 35);
@@ -1017,60 +965,10 @@ int main(int argc, char *argv[]){
 	}
 	std::cout << "  Loaded " << n_sfh << endl;
 
-#else
-	infs.open(optlib);
-	if (!infs.is_open()){
-		cerr << "Failed to open SFH library: " << optlib << endl;
-		exit(-1);
-	}
-	cout << "Reading SFH library..." << endl;
-	n_sfh = 0;
-	int i_line = 0;
-	while (getline(infs, line)){
-		i_line++;
-		if (line[0] != '#'){
-			ss.str("");
-			ss.clear();
-			ss << line;
-			ss >> indx[n_sfh];
-			// Simulate FORTRAN starform header bug.
-			if (i_line > 2){
-				for (j = 0; j < NPROP_SFH; j++){
-					ss >> fprop_sfh[j][n_sfh];
-				}
-				for (j = 0; j < nfilt_sfh; j++){
-					ss >> flux_sfh[j][n_sfh];
-				}
-
-				//
-				fmu_sfh[n_sfh] = fprop_sfh[21][n_sfh];
-				mstr1[n_sfh] = fprop_sfh[5][n_sfh];
-				ldust[n_sfh] = fprop_sfh[20][n_sfh] / mstr1[n_sfh];
-				logldust[n_sfh] = log10(ldust[n_sfh]);
-				mu[n_sfh] = fprop_sfh[4][n_sfh];
-				tauv[n_sfh] = fprop_sfh[3][n_sfh];
-				ssfr[n_sfh] = fprop_sfh[9][n_sfh] / mstr1[n_sfh];
-				lssfr[n_sfh] = log10(ssfr[n_sfh]);
-				tvism[n_sfh] = mu[n_sfh] * tauv[n_sfh];
-
-				for (k = 0; k < nfilt_sfh; k++){
-					flux_sfh[k][n_sfh] = 3.117336e+6f*pow(10, -0.4f*(flux_sfh[k][n_sfh] + 48.6f));
-					flux_sfh[k][n_sfh] = flux_sfh[k][n_sfh] / mstr1[n_sfh];
-					flux_sfh[k][n_sfh] = flux_sfh[k][n_sfh] / (1 + redshift);
-				}
-				n_sfh++;
-			}
-		}
-	}
-	infs.close();
-	cout << " Loaded." << endl;
-#endif
-
 	// READ IRLIB
 	// IR model parameters
 	// .lbr contains absolute AB magnitudes -> convert to fluxes Fnu in Lo/Hz
 	//  Re-define IR parameters: xi^tot
-#if defined(_WIN32)
 	std::cout << "Reading IR dust emission library..." << endl;
 	string irname(irlib, 0, 35);
 	Parser irParser(irname);
@@ -1115,52 +1013,6 @@ int main(int argc, char *argv[]){
 		}
 	}
 	std::cout << "  Loaded " << n_ir << endl;
-#else
-	infs.open(irlib);
-	if (!infs.is_open()){
-		cerr << "Failed to open IR dust emission library: " << irlib << endl;
-		exit(-1);
-	}
-	std::cout << "Reading IR dust emission library..." << endl;
-	n_ir = 0;
-	while (getline(infs, line)){
-		if (line[0] != '#'){
-			ss.str("");
-			ss.clear();
-			ss << line;
-			for (j = 0; j < NPROP_IR; j++){
-				ss >> fprop_ir[j][n_ir];
-			}
-			for (j = 0; j < nfilt_ir; j++){
-				ss >> flux_ir[j][n_ir];
-			}
-
-			// We need to subtract array index by 1 due to fortran difference.
-			fmu_ir[n_ir] = fprop_ir[0][n_ir];
-			fmu_ism[n_ir] = fprop_ir[1][n_ir];
-			tbg1[n_ir] = fprop_ir[2][n_ir];
-			tbg2[n_ir] = fprop_ir[3][n_ir];
-			xi1[n_ir] = fprop_ir[4][n_ir];
-			xi2[n_ir] = fprop_ir[5][n_ir];
-			xi3[n_ir] = fprop_ir[6][n_ir];
-			mdust[n_ir] = fprop_ir[7][n_ir];
-
-			for (k = 0; k < nfilt_ir; k++){
-				flux_ir[k][n_ir] = 3.117336e+6f*pow(10, -0.4f*(flux_ir[k][n_ir] + 48.6f));
-				flux_ir[k][n_ir] = flux_ir[k][n_ir] / (1 + redshift);
-			}
-
-			xi1[n_ir] = xi1[n_ir] * (1 - fmu_ir[n_ir]) + 0.550f*(1 - fmu_ism[n_ir])*fmu_ir[n_ir];
-			xi2[n_ir] = xi2[n_ir] * (1 - fmu_ir[n_ir]) + 0.275f*(1 - fmu_ism[n_ir])*fmu_ir[n_ir];
-			xi3[n_ir] = xi3[n_ir] * (1 - fmu_ir[n_ir]) + 0.175f*(1 - fmu_ism[n_ir])*fmu_ir[n_ir];
-			fmu_ism[n_ir] = fmu_ism[n_ir] * fmu_ir[n_ir];
-
-			n_ir++;
-		}
-	}
-	infs.close();
-	std::cout << "  Loaded " << n_ir << endl;
-#endif
 
 	// ---------------------------------------------------------------------------
 	// COMPARISON BETWEEN MODELS AND OBSERVATIONS:
@@ -1361,7 +1213,7 @@ int main(int argc, char *argv[]){
 
 	for (i = 0; i < CLBLOCKSIZE_RED; i++){
 		cl_sum[i] = 0;
-		cl_min[i] = INFINITY;
+		cl_minchi[i] = INFINITY;
 	}
 	for (i = 0; i < NMAX; i++){
 		if (i<nfilt && flux_obs[i]>0) {
@@ -1470,8 +1322,8 @@ int main(int argc, char *argv[]){
 		cl::Buffer d_filt_ir_mask = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, NMAX*sizeof(double), filt_ir_mask, NULL);
 		cl::Buffer d_w = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, NMAX*sizeof(double), w, NULL);
 
-		cl::Buffer d_clids = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(clid_t), h_clids, NULL);
-		//cl::Buffer d_clmodels = cl::Buffer(context, CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(clmodel_t), h_clmodels, NULL);
+		cl::Buffer d_cl_sfh = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(unsigned short), cl_sfh , NULL);
+		cl::Buffer d_cl_ir = cl::Buffer(context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(unsigned short), cl_ir, NULL);
 		cl::Buffer d_cl_chi2 = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(double), cl_chi2, NULL);
 		cl::Buffer d_cl_prob = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(double), cl_prob, NULL);
 		cl::Buffer d_ibin_pa = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(unsigned short), ibin_pa, NULL);
@@ -1480,16 +1332,19 @@ int main(int argc, char *argv[]){
 		cl::Buffer d_ibin_pmdust = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLMAX*sizeof(unsigned short), ibin_pmdust, NULL);
 
 		cl::Buffer d_cl_sum = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(double), cl_sum, NULL);
-		cl::Buffer d_cl_min = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(double), cl_min, NULL);
-		cl::Buffer d_cl_sfh = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_sfh, NULL);
-		cl::Buffer d_cl_ir = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_ir, NULL);
+		cl::Buffer d_cl_minchi = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(double), cl_minchi, NULL);
+		cl::Buffer d_cl_minsfh = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_minsfh, NULL);
+		cl::Buffer d_cl_minir = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_minir, NULL);
 
-		//cl::Buffer d_sfh_hist = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NMOD*sizeof(double), sfh_hist, NULL);
-		//cl::Buffer d_ir_hist = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NMOD*sizeof(double), ir_hist, NULL);
-		//cl::Buffer d_pa = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), pa, NULL);
-		//cl::Buffer d_psfr = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), psfr, NULL);
-		//cl::Buffer d_pldust = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), pldust, NULL);
-		//cl::Buffer d_pmdust = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), pmd, NULL);
+		static double cl_range[7 * 2 * NBINMAX1];
+		cl::Buffer d_cl_range = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, gpu_compute * 2 * NBINMAX1*sizeof(double), cl_range, NULL);
+
+		cl::Buffer d_sfh_hist = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NMOD*sizeof(double), sfh_hist, NULL);
+		cl::Buffer d_ir_hist = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NMOD*sizeof(double), ir_hist, NULL);
+		cl::Buffer d_pa = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), pa, NULL);
+		cl::Buffer d_psfr = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), psfr, NULL);
+		cl::Buffer d_pldust = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), pldust, NULL);
+		cl::Buffer d_pmdust = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), pmd, NULL);
 
 		// Write static objects into reserved device memory.
 		queue.enqueueWriteBuffer(d_clclconstants, CL_TRUE, 0, sizeof(clconstants_t), &h_clconstants);
@@ -1500,10 +1355,14 @@ int main(int argc, char *argv[]){
 		queue.enqueueWriteBuffer(d_filt_sfh_mask, CL_TRUE, 0, NMAX*sizeof(double), filt_sfh_mask);
 		queue.enqueueWriteBuffer(d_filt_ir_mask, CL_TRUE, 0, NMAX*sizeof(double), filt_ir_mask);
 		queue.enqueueWriteBuffer(d_w, CL_TRUE, 0, NMAX*sizeof(double), w);
+
 		queue.enqueueWriteBuffer(d_cl_sum, CL_FALSE, 0, CLBLOCKSIZE_RED*sizeof(double), cl_sum);
-		queue.enqueueWriteBuffer(d_cl_min, CL_FALSE, 0, CLBLOCKSIZE_RED*sizeof(double), cl_min);
+		queue.enqueueWriteBuffer(d_cl_minchi, CL_FALSE, 0, CLBLOCKSIZE_RED*sizeof(double), cl_minchi);
+
 		queue.enqueueWriteBuffer(d_fmu_sfh, CL_TRUE, 0, NMOD*sizeof(double), fmu_sfh);
 		queue.enqueueWriteBuffer(d_fmu_ir, CL_TRUE, 0, NMOD*sizeof(double), fmu_ir);
+
+		queue.enqueueWriteBuffer(d_pa, CL_TRUE, 0, NBINMAX1*sizeof(double), pa);
 
 		// Prepare kernel program.
 		cl::Kernel kernel_checkdf(fit_program, "check_df");
@@ -1529,13 +1388,14 @@ int main(int argc, char *argv[]){
 		kernel_fit.setArg(6, d_flux_obs_mask);
 		kernel_fit.setArg(7, d_filt_sfh_mask);
 		kernel_fit.setArg(8, d_filt_ir_mask);
-		kernel_fit.setArg(9, d_clids);
-		kernel_fit.setArg(10, d_cl_chi2);
-		kernel_fit.setArg(11, d_cl_prob);
-		kernel_fit.setArg(12, d_ibin_pa);
-		kernel_fit.setArg(13, d_ibin_psfr);
-		kernel_fit.setArg(14, d_ibin_pldust);
-		kernel_fit.setArg(15, d_ibin_pmdust);
+		kernel_fit.setArg(9, d_cl_sfh);
+		kernel_fit.setArg(10, d_cl_ir);
+		kernel_fit.setArg(11, d_cl_chi2);
+		kernel_fit.setArg(12, d_cl_prob);
+		kernel_fit.setArg(13, d_ibin_pa);
+		kernel_fit.setArg(14, d_ibin_psfr);
+		kernel_fit.setArg(15, d_ibin_pldust);
+		kernel_fit.setArg(16, d_ibin_pmdust);
 
 		// Set local workload size. Recommend divides NBINMAX1 and 64 evenly and is less/equal to NBIN_SPARSEHISTOGRAM.
 		cl::NDRange localSize_fit(CLLOCAL_FIT);
@@ -1551,14 +1411,15 @@ int main(int argc, char *argv[]){
 		// Prepare kernel program.
 		cl::Kernel kernel_minchi(fit_program, "minchi");
 		//argument 0 will be i_m - number of models to process
-		kernel_minchi.setArg(1, d_clids);
-		kernel_minchi.setArg(2, d_cl_chi2);
-		kernel_minchi.setArg(3, d_cl_min);
-		kernel_minchi.setArg(4, d_cl_sfh);
-		kernel_minchi.setArg(5, d_cl_ir);
-		kernel_minchi.setArg(6, (CLBLOCKSIZE_RED)*sizeof(double), NULL); //Local Scratch
-		kernel_minchi.setArg(7, (CLBLOCKSIZE_RED)*sizeof(unsigned short), NULL); //Local Scratch
+		kernel_minchi.setArg(1, d_cl_sfh);
+		kernel_minchi.setArg(2, d_cl_ir);
+		kernel_minchi.setArg(3, d_cl_chi2);
+		kernel_minchi.setArg(4, d_cl_minchi);
+		kernel_minchi.setArg(5, d_cl_minsfh);
+		kernel_minchi.setArg(6, d_cl_minir);
+		kernel_minchi.setArg(7, (CLBLOCKSIZE_RED)*sizeof(double), NULL); //Local Scratch
 		kernel_minchi.setArg(8, (CLBLOCKSIZE_RED)*sizeof(unsigned short), NULL); //Local Scratch
+		kernel_minchi.setArg(9, (CLBLOCKSIZE_RED)*sizeof(unsigned short), NULL); //Local Scratch
 
 		cl::NDRange localSize_reduce(CLLOCAL_RED);
 		std::cout << " Reduce LocalSize " << CLLOCAL_RED << " Global Size " << CLBLOCKSIZE_RED*gpu_compute << endl;
@@ -1566,6 +1427,39 @@ int main(int argc, char *argv[]){
 		// Set global workload size.
 		cl::NDRange globalSize_reduce(CLBLOCKSIZE_RED*gpu_compute);
 		
+		// Prepare kernel program.
+		cl::Kernel kernel_sumidtorange(fit_program, "sumidtorange");
+		//argument 0 will be i_m - number of models to process
+		//argument 1 const int ci_groupSize,
+		// argument 2	const int ci_theadSize,
+		//argument 3 will be  - range start
+		//argument 4 will be  - range width
+		//argument 5 will be unsigned short array of ids.
+		kernel_sumidtorange.setArg(6, d_cl_prob);
+		kernel_sumidtorange.setArg(7, d_cl_range); //Temporary Global to send to sumRangetoarray
+		//argument 8 is local scratch
+
+		// Prepare kernel program.
+		cl::Kernel kernel_sumrangetoarray(fit_program, "sumrangetoarray");
+		//argument 0 will be  - range start
+		//argument 1 will be  - range width
+		//argument 2 will be - num groups /
+		kernel_sumrangetoarray.setArg(2, gpu_compute * 2);
+		kernel_sumrangetoarray.setArg(3, d_cl_range); //Temporary Global to send to sumRangetoarray
+		//argument 4 will be - Array to update. d_sfh_hist d_ir_hist d_pa d_psfr d_pldust d_pmdust
+		//kernel_sumrangetoarray.setArg(4, d_sfh_hist);
+
+		// Set global workload size.
+		cl::NDRange localSize_range(CLLOCAL_RANGE);
+		cl::NDRange globalSize_range(CLLOCAL_RANGE*gpu_compute * 2);
+
+		std::cout << " Range LocalSize " << CLLOCAL_RANGE << " Global Size " << CLLOCAL_RANGE*gpu_compute * 2 << endl;
+
+		cl::NDRange localSize_range2(CLBLOCKSIZE_RED);
+		cl::NDRange globalSize_range2(CLBLOCKSIZE_RED*gpu_compute * 2);
+
+		std::cout << " Range2 LocalSize " << CLBLOCKSIZE_RED << " Global Size " << CLBLOCKSIZE_RED*gpu_compute * 2 << endl;
+
 		// Event that will be used for getting response.
 		cl::Event event;
 
@@ -1577,6 +1471,7 @@ int main(int argc, char *argv[]){
 		std::clock_t arrtimedf = 0;
 		cl_ulong start, end;
 		double cltime = 0;
+		double cltimehisto = 0;
 		int i_kernel = 0;
 
 		//Load withindf for first sfh.
@@ -1605,8 +1500,8 @@ int main(int argc, char *argv[]){
 				while (i_df < CLDFSIZE && i_m<CLMAX) {
 					while (i_dfshift < 32 && i_m < CLMAX) {
 						if ((ui_df & 1) == 1) {
-							h_clids[i_m].i_sfh = i_sfh + i_sfhoffset;
-							h_clids[i_m].i_ir = i_iroffset + i_dfshift;
+							cl_sfh[i_m] = i_sfh + i_sfhoffset;
+							cl_ir[i_m] = i_iroffset + i_dfshift;
 							i_m++;
 						}
 						ui_df = ui_df >> 1;
@@ -1649,7 +1544,8 @@ int main(int argc, char *argv[]){
 			//Calculate Fit
 			clckstart = std::clock();
 			// Write identifier struct array to device. This will change on a per batch basis.
-			queue.enqueueWriteBuffer(d_clids, CL_TRUE, 0, i_m*sizeof(clid_t), h_clids);
+			queue.enqueueWriteBuffer(d_cl_sfh, CL_TRUE, 0, i_m*sizeof(unsigned short), cl_sfh);
+			queue.enqueueWriteBuffer(d_cl_ir, CL_TRUE, 0, i_m*sizeof(unsigned short), cl_ir);
 			//void* p_map_clmodels = queue.enqueueMapBuffer(d_clmodels, CL_TRUE, CL_MAP_WRITE, 0, i_m*sizeof(clmodel_t), 0);
 			memtime = memtime + (std::clock() - clckstart);
 
@@ -1727,29 +1623,29 @@ int main(int argc, char *argv[]){
 			cltime = cltime + (end - start);
 
 			clckstart = std::clock();
-			queue.enqueueReadBuffer(d_cl_min, CL_TRUE, 0, CLBLOCKSIZE_RED*sizeof(double), cl_min);
-			queue.enqueueReadBuffer(d_cl_sfh, CL_TRUE, 0, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_sfh);
-			queue.enqueueReadBuffer(d_cl_ir, CL_TRUE, 0, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_ir);
+			queue.enqueueReadBuffer(d_cl_minchi, CL_TRUE, 0, CLBLOCKSIZE_RED*sizeof(double), cl_minchi);
+			queue.enqueueReadBuffer(d_cl_minsfh, CL_TRUE, 0, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_minsfh);
+			queue.enqueueReadBuffer(d_cl_minir, CL_TRUE, 0, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_minir);
 			memtime = memtime + (std::clock() - clckstart);
 
 			clckstart = std::clock();
 			for (i = 0; i < CLBLOCKSIZE_RED*gpu_compute / CLLOCAL_RED; i++){
-				if (cl_min[i] < chi2_sav){
-					chi2_sav = cl_min[i];
-					sfh_sav = cl_sfh[i];
-					ir_sav = cl_ir[i];
+				if (cl_minchi[i] < chi2_sav){
+					chi2_sav = cl_minchi[i];
+					sfh_sav = cl_minsfh[i];
+					ir_sav = cl_minir[i];
 				}
-				else if (cl_min[i] == chi2_sav && (cl_sfh[i] * NMOD) + cl_ir[i] < (sfh_sav*NMOD) + ir_sav){
-					chi2_sav = cl_min[i];
-					sfh_sav = cl_sfh[i];
-					ir_sav = cl_ir[i];
+				else if (cl_minchi[i] == chi2_sav && (cl_minsfh[i] * NMOD) + cl_minir[i] < (sfh_sav*NMOD) + ir_sav){
+					chi2_sav = cl_minchi[i];
+					sfh_sav = cl_minsfh[i];
+					ir_sav = cl_minir[i];
 				}
-				cl_min[i] = INFINITY;
+				cl_minchi[i] = INFINITY;
 			}
 			arrtime1 = arrtime1 + (std::clock() - clckstart);
 
 			//Write Initialized array back, non-blocking since it's small and we have time...
-			queue.enqueueWriteBuffer(d_cl_min, CL_FALSE, 0, CLBLOCKSIZE_RED*sizeof(double), cl_min);
+			queue.enqueueWriteBuffer(d_cl_minchi, CL_FALSE, 0, CLBLOCKSIZE_RED*sizeof(double), cl_minchi);
 
 			if (i_m != i_mpow2) { //Loop Remaining that doesn't fit nicely into the reducer by pow2. //Last Step
 				clckstart = std::clock();
@@ -1758,26 +1654,60 @@ int main(int argc, char *argv[]){
 
 				clckstart = std::clock();
 				for (i = i_mpow2; i < i_m; i++){
-					clid_t id = h_clids[i];
 					if (cl_chi2[i] < chi2_sav){
 						chi2_sav = cl_chi2[i];
-						sfh_sav = id.i_sfh;
-						ir_sav = id.i_ir;
+						sfh_sav = cl_sfh[i];
+						ir_sav = cl_ir[i];
 					}
-					else if (cl_chi2[i] == chi2_sav && (id.i_sfh*NMOD)+id.i_ir < (sfh_sav*NMOD)+ir_sav){
+					else if (cl_chi2[i] == chi2_sav && (cl_sfh[i] * NMOD) + cl_ir[i] < (sfh_sav*NMOD) + ir_sav){
 						chi2_sav = cl_chi2[i];
-						sfh_sav = id.i_sfh;
-						ir_sav = id.i_ir;
+						sfh_sav = cl_sfh[i];
+						ir_sav = cl_ir[i];
 					}
 				}
 				arrtime1 = arrtime1 + (std::clock() - clckstart);
 			}
 
+//Reduce Histogram
+			//Part1 Reduce pa histogram
+			kernel_sumidtorange.setArg(0, i_m);
+			int cl_groupsize = ceil(i_m / (double)(gpu_compute * 2)); //18296
+			int cl_threadsize = ceil(cl_groupsize / (double)CLLOCAL_RANGE);	  //18296/256=72 *256=18304
+			kernel_sumidtorange.setArg(1, cl_groupsize);
+			kernel_sumidtorange.setArg(2, cl_threadsize);
+			kernel_sumidtorange.setArg(3, 0);
+			kernel_sumidtorange.setArg(4, NBINMAX1);
+			kernel_sumidtorange.setArg(5, d_ibin_pa);
+			kernel_sumidtorange.setArg(8, cl_threadsize*CLLOCAL_RANGE * sizeof(unsigned short), NULL); //Local Scratch
+
+			queue.enqueueNDRangeKernel(kernel_sumidtorange, cl::NullRange, globalSize_range, localSize_range,
+				NULL, &event);
+
+			event.wait();
+
+			start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+			end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
+			cltimehisto = cltimehisto + (end - start);
+
+			//Part2 Reduce pa histogram
+			kernel_sumrangetoarray.setArg(0, 0);
+			kernel_sumrangetoarray.setArg(1, NBINMAX1);
+			kernel_sumrangetoarray.setArg(4, d_pa);
+
+			queue.enqueueNDRangeKernel(kernel_sumrangetoarray, cl::NullRange, globalSize_range2, localSize_range2,
+				NULL, &event);
+
+			event.wait();
+
+			start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+			end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
+			cltimehisto = cltimehisto + (end - start);
+
 			//Manual Reduce HistoGram
 			// Read processed model data back from device memory.
 			clckstart = std::clock();
 			queue.enqueueReadBuffer(d_cl_prob, CL_TRUE, 0, i_m*sizeof(double), cl_prob);
-			queue.enqueueReadBuffer(d_ibin_pa, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pa);
+			//queue.enqueueReadBuffer(d_ibin_pa, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pa);
 			queue.enqueueReadBuffer(d_ibin_psfr, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_psfr);
 			queue.enqueueReadBuffer(d_ibin_pldust, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pldust);
 			queue.enqueueReadBuffer(d_ibin_pmdust, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pmdust);
@@ -1786,11 +1716,9 @@ int main(int argc, char *argv[]){
 			clckstart = std::clock();
 			// Sequential loop for cumulative shared values.
 			for (i = 0; i<i_m; i++){
-				clid_t id = h_clids[i];
-
-				sfh_hist[id.i_sfh] += cl_prob[i];
-				ir_hist[id.i_ir] += cl_prob[i];
-				pa[ibin_pa[i]] += cl_prob[i];
+				sfh_hist[cl_sfh[i]] += cl_prob[i];
+				ir_hist[cl_ir[i]] += cl_prob[i];
+				//pa[ibin_pa[i]] += cl_prob[i];
 				psfr[ibin_psfr[i]] += cl_prob[i];
 				pldust[ibin_pldust[i]] += cl_prob[i];
 				pmd[ibin_pmdust[i]] += cl_prob[i];
@@ -1804,6 +1732,7 @@ int main(int argc, char *argv[]){
 				std::cout << "Time for id array processing  " << (arrtime / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtime / (double)CLOCKS_PER_SEC) << endl;
 				std::cout << "Time for df kernel processing  " << (arrtimedf / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtimedf / (double)CLOCKS_PER_SEC) << endl;
 				std::cout << "Time for model array processing  " << (arrtime1 / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtime1 / (double)CLOCKS_PER_SEC) << endl;
+				std::cout << "Time for model kernel to execute " << cltimehisto / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltimehisto * 1.e-9 << endl;
 			}
 			else if ((i_sfh + i_sfhoffset) * 100 / n_sfh > writePercentage){
 				std::cout << "\r " << writePercentage << "% done... " << (n_sfh * writePercentage) / 100 << "/" << n_sfh << " opt. models" << endl;
@@ -1812,6 +1741,7 @@ int main(int argc, char *argv[]){
 
 		} //while (i_sfh<n_sfh)
 
+		queue.enqueueReadBuffer(d_pa, CL_TRUE, 0,  NBINMAX1*sizeof(double), pa);
 	}
 	catch (cl::Error error){
 		//CL_INVALID_ARG_INDEX
@@ -1820,13 +1750,14 @@ int main(int argc, char *argv[]){
 	}
 
 	//Expand SFH_HIST and IR_HIST
-	for (i = 0; i<NMOD; i++){
+	for (i = 0; i < n_sfh; i++){
 		psfh[i_fmu_sfh[i]] += sfh_hist[i];
 		pmu[i_mu[i]] += sfh_hist[i];
 		ptv[i_tauv[i]] += sfh_hist[i];
 		ptvism[i_tvism[i]] += sfh_hist[i];
 		pssfr[i_lssfr[i]] += sfh_hist[i];
-
+	}
+	for (i = 0; i < n_ir; i++){
 		pir[i_fmu_ir[i]] += ir_hist[i];
 		pism[i_fmu_ism[i]] += ir_hist[i];
 		ptbg1[i_tbg1[i]] += ir_hist[i];
@@ -2078,9 +2009,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... f_mu (SFH) ...\n");
 	for (ibin = 0; ibin<nbin2_fmu; ibin++){
-		std::sprintf(dbuf, "%.3E", psfh2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", fmu2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", fmu2_hist[ibin]);
+		print_fexp3(fitfp, psfh2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2096,9 +2027,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... f_mu (IR) ...\n");
 	for (ibin = 0; ibin<nbin2_fmu; ibin++){
-		std::sprintf(dbuf, "%.3E", pir2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", fmu2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", fmu2_hist[ibin]);
+		print_fexp3(fitfp, pir2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2114,9 +2045,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... mu parameter ...\n");
 	for (ibin = 0; ibin<nbin2_mu; ibin++){
-		std::sprintf(dbuf, "%.3E", pmu2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", mu2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", mu2_hist[ibin]);
+		print_fexp3(fitfp, pmu2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2132,9 +2063,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... tau_V ...\n");
 	for (ibin = 0; ibin<nbin2_tv; ibin++){
-		std::sprintf(dbuf, "%.3E", ptv2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", tv2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", tv2_hist[ibin]);
+		print_fexp3(fitfp, ptv2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2150,19 +2081,14 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... sSFR_0.1Gyr ...\n");
 	for (ibin = 0; ibin<nbin2_ssfr; ibin++){
-		std::sprintf(dbuf, "%.3E", ssfr2_hist[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s", dbuf);
-		std::sprintf(dbuf, "%.3E", pssfr2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s\n", dbuf);
+		print_fexp3(fitfp, ssfr2_hist[ibin]);
+		print_fexp3(fitfp, pssfr2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
 	for (k = 0; k<5; k++){
-		std::sprintf(dbuf, "%.3E", pct_ssfr[k]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s", dbuf);
+		print_fexp3(fitfp, pct_ssfr[k]);
 	}
 	std::fprintf(fitfp, "\n");
 
@@ -2173,19 +2099,14 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... M(stars) ...\n");
 	for (ibin = 0; ibin<nbin2_a; ibin++){
-		std::sprintf(dbuf, "%.3E", a2_hist[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s", dbuf);
-		std::sprintf(dbuf, "%.3E", pa2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s\n", dbuf);
+		print_fexp3(fitfp, a2_hist[ibin]);
+		print_fexp3(fitfp, pa2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
 	for (k = 0; k<5; k++){
-		std::sprintf(dbuf, "%.3E", pct_mstr[k]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s", dbuf);
+		print_fexp3(fitfp, pct_mstr[k]);
 	}
 	std::fprintf(fitfp, "\n");
 
@@ -2196,19 +2117,14 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... Ldust ...\n");
 	for (ibin = 0; ibin<nbin2_ld; ibin++){
-		std::sprintf(dbuf, "%.3E", ld2_hist[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s", dbuf);
-		std::sprintf(dbuf, "%.3E", pldust2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s\n", dbuf);
+		print_fexp3(fitfp, ld2_hist[ibin]);
+		print_fexp3(fitfp, pldust2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
 	for (k = 0; k<5; k++){
-		std::sprintf(dbuf, "%.3E", pct_ld[k]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s", dbuf);
+		print_fexp3(fitfp, pct_ld[k]);
 	}
 	std::fprintf(fitfp, "\n");
 
@@ -2219,9 +2135,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... T_C^ISM ...\n");
 	for (ibin = 0; ibin<nbin2_tbg2; ibin++){
-		std::sprintf(dbuf, "%.3E", ptbg2_2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", tbg2_2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", tbg2_2_hist[ibin]);
+		print_fexp3(fitfp, ptbg2_2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2237,9 +2153,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... T_W^BC ...\n");
 	for (ibin = 0; ibin<nbin2_tbg1; ibin++){
-		std::sprintf(dbuf, "%.3E", ptbg1_2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", tbg1_2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", tbg1_2_hist[ibin]);
+		print_fexp3(fitfp, ptbg1_2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2255,9 +2171,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... xi_C^tot ...\n");
 	for (ibin = 0; ibin<nbin2_fmu_ism; ibin++){
-		std::sprintf(dbuf, "%.3E", pism2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", fmuism2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", fmuism2_hist[ibin]);
+		print_fexp3(fitfp, pism2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2273,9 +2189,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... xi_PAH^tot ...\n");
 	for (ibin = 0; ibin<nbin2_xi; ibin++){
-		std::sprintf(dbuf, "%.3E", pxi1_2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", xi2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", xi2_hist[ibin]);
+		print_fexp3(fitfp, pxi1_2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2291,9 +2207,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... xi_MIR^tot ...\n");
 	for (ibin = 0; ibin<nbin2_xi; ibin++){
-		std::sprintf(dbuf, "%.3E", pxi2_2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", xi2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", xi2_hist[ibin]);
+		print_fexp3(fitfp, pxi2_2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2309,9 +2225,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... xi_W^tot ...\n");
 	for (ibin = 0; ibin<nbin2_xi; ibin++){
-		std::sprintf(dbuf, "%.3E", pxi3_2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", xi2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", xi2_hist[ibin]);
+		print_fexp3(fitfp, pxi3_2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2327,9 +2243,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... tau_V^ISM...\n");
 	for (ibin = 0; ibin<nbin2_tvism; ibin++){
-		std::sprintf(dbuf, "%.3E", ptvism2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", tvism2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", tvism2_hist[ibin]);
+		print_fexp3(fitfp, ptvism2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2345,9 +2261,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... M(dust)...\n");
 	for (ibin = 0; ibin<nbin2_md; ibin++){
-		std::sprintf(dbuf, "%.3E", pmd_2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%10.4f%12s\n", md2_hist[ibin], dbuf);
+		std::fprintf(fitfp, "%10.4f", md2_hist[ibin]);
+		print_fexp3(fitfp, pmd_2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
@@ -2362,12 +2278,9 @@ int main(int argc, char *argv[]){
 
 	std::fprintf(fitfp, "# ... SFR_0.1Gyr ...\n");
 	for (ibin = 0; ibin<nbin2_sfr; ibin++){
-		std::sprintf(dbuf, "%.3E", sfr2_hist[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s", dbuf);
-		std::sprintf(dbuf, "%.3E", psfr2[ibin]);
-		get_fexp3(dbuf);
-		std::fprintf(fitfp, "%12s\n", dbuf);
+		print_fexp3(fitfp, sfr2_hist[ibin]);
+		print_fexp3(fitfp, psfr2[ibin]);
+		std::fprintf(fitfp, "\n");
 	}
 	std::fprintf(fitfp, "#....percentiles of the PDF......\n");
 	for (k = 0; k<5; k++){
@@ -2461,6 +2374,7 @@ void get_histgrid(double dv, double vmin, double vmax, int* nbin, double vout[])
 		(*nbin)++;
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Calculates percentiles of the probability distibution
 // for a given parameter: 2.5, 16, 50 (median), 84, 97.5
@@ -2522,6 +2436,7 @@ void sort2(double arr1[], double arr2[], int left, int right) {
 	if (i < right)
 		sort2(arr1, arr2, i, right);
 }
+
 // ---------------------------------------------------------------------------
 // Computes luminosity distance corresponding to a redshift z.
 // Uses Mattig formulae for qo both 0 and non 0
@@ -2651,6 +2566,44 @@ void get_fexp3(char dstr[]){
 	delete[] exp_str;
 }
 
+void print_fexp3(FILE * fitfp, double histvalue) {
+	static char dstr[20];
+	static double dvalue;
+	int orig_len, i, base_end_pos;
+	std::sprintf(dstr, "%.3E", histvalue);
+
+	orig_len = (int)strlen(dstr);
+	i = orig_len;
+	while (i >= 0 && !(dstr[i] == '+' || dstr[i] == '-')){
+		i--;
+	}
+	i++;
+	base_end_pos = i;
+
+	char * exp_str = new char[orig_len - base_end_pos + 1];
+
+	char c = dstr[i];
+	int j = 0;
+	while (c != '\0'){
+		c = dstr[i++];
+		exp_str[j] = c;
+		j++;
+	}
+	exp_str[j] = '\0';
+
+	int exp = atoi(exp_str);
+	std::sprintf(exp_str, "%03d", exp);
+
+	for (int k = 0; k<(int)strlen(exp_str); k++){
+		dstr[base_end_pos++] = exp_str[k];
+	}
+
+	dstr[i] = '\0';
+	delete[] exp_str;
+
+	std::fprintf(fitfp, "%12s", dstr);
+}
+
 // Very ugly function that modifies scientific notation string into FORTRAN style preceding 0.
 void get_fsci(char dstr[]){
 	int orig_len = (int)strlen(dstr);
@@ -2736,7 +2689,6 @@ double round_nup(double n, int p){
 	return n;
 }
 
-#if defined(_WIN32)
 Parser::Parser()
 {
 	ignoring = -1;
@@ -2861,4 +2813,4 @@ void Parser::GetNextToken(std::string& container, size_t& from)
 
 	from = to;
 }
-#endif
+
