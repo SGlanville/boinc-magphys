@@ -376,7 +376,8 @@ __kernel void sumidtorange(
 	__global ushort* ibin_id,
 	__global double* cl_prob,
 	__global double *g_odata,
-	__local ushort* sdataid)
+	__local ushort* sdataid,
+	__local double* sdataprob)
 {
 	//scratch is (clmax/get_num_groups)*double  262144 *2b 524288/49152=11  /14 37450  multiple of gpu_compute<48K
 	//g_odata is range*get_num_groups*double    3008*14 42K 200K total 50008*14 700K vs balanced square 14k+14k vs cpu reduce 262k f-op 1.4M f-op total
@@ -397,62 +398,54 @@ __kernel void sumidtorange(
 
 		if (i_local_id < ci_groupSize && i_global_id < ci_idsSize) {
 			sdataid[i_local_id] = ibin_id[i_global_id];
+			sdataprob[i_local_id] = cl_prob[i_global_id];
 		} else {
 			sdataid[i_local_id] = 65535;
+			sdataprob[i_local_id] = 0;
 		}
 	}
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	double sum_search[12];
-	for (int ii_findid = 0; ii_findid < 12; ii_findid++) {
+	//ii_findid. 2304/256=9 or 50008/256=195 (unbalanced block, balanced=4)
+	double sum_search[11]; //extra item at begining and end to store unneed values.
+	for (int ii_findid = 0; ii_findid < 10; ii_findid++) {
 		sum_search[ii_findid] = 0;
 	}
-	ushort i_local_searchoffset = 12 * get_local_id(0);
-	ushort i_local_searchoffsetend = min(i_local_searchoffset + 12, range_width);
+	ushort i_local_searchoffset = 9 * get_local_id(0);
+	ushort i_local_searchoffsetend = min(i_local_searchoffset + 9, range_width);
+	const ushort us_searchmax = 10;
+	const ushort us_searchmin = 0;
 
-	ushort i_offsetstart = 0;
-	ushort i_offsetend = 12;
-	//ushort i_offsetbool = 1;
-	//ushort8 offset_low;
-	//ushort8 offset_high;
+	//ii_chklocal = 4574/8=571
+	//ushort8 chkid = vload8(0, sdataid);
+	//double8 prob = vload8(0, sdataprob);
+	//ushort8 chkidoffset = chkid - i_local_searchoffset;
 
-	//ii_findid. 3008/256= 11 or 50008/256=195 (unbalanced block, balanced=4)
-	//ii_findid. 3008/256= 94
-	//ii_chklocal = 18296/8=2287
-	int i_prob_offset8 = i_global_groupoffset/8;
-	int i_prob_offset = i_global_groupoffset;
-	for (int ii_chklocal = 0; ii_chklocal < ci_groupSize/8; ii_chklocal++) {
-		ushort8 chkid = vload8(ii_chklocal, sdataid); //local memory
-		//ushort8 chkid = vload8(i_prob_offset8 + ii_chklocal, ibin_id); //global memory
-		//if (chkid >= i_local_searchoffset && chkid < i_local_searchoffsetend) {
-			ushort8 chkidoffset = chkid - i_local_searchoffset;
-			//int8 chkidoffset = convert_int8(vload8(ii_chklocal, sdataid) - i_local_searchoffset);
-			//int8 chkidbool = (chkidoffset >= 0 && chkidoffset < 12);
-
-			//double8 prob = vload8(i_prob_offset8 + ii_chklocal, cl_prob);
-			//if (chkidoffset.s0 >= i_offsetstart && chkidoffset.s0 < i_offsetend) sum_search[chkidoffset.s0] += prob.s0;
-			//if (chkidoffset.s1 >= i_offsetstart && chkidoffset.s1 < i_offsetend) sum_search[chkidoffset.s1] += prob.s1;
-			//if (chkidbool.s0) sum_search[chkidoffset.s0] += cl_prob[i_prob_offset];
-			//if (chkidbool.s1) sum_search[chkidoffset.s1] += cl_prob[i_prob_offset+1];
-
-			if (chkidoffset.s0 >= i_offsetstart && chkidoffset.s0 < i_offsetend) sum_search[chkidoffset.s0] += cl_prob[i_prob_offset];
-			if (chkidoffset.s1 >= i_offsetstart && chkidoffset.s1 < i_offsetend) sum_search[chkidoffset.s1] += cl_prob[i_prob_offset + 1];
-			if (chkidoffset.s2 >= i_offsetstart && chkidoffset.s2 < i_offsetend) sum_search[chkidoffset.s2] += cl_prob[i_prob_offset + 2];
-			if (chkidoffset.s3 >= i_offsetstart && chkidoffset.s3 < i_offsetend) sum_search[chkidoffset.s3] += cl_prob[i_prob_offset + 3];
-			if (chkidoffset.s4 >= i_offsetstart && chkidoffset.s4 < i_offsetend) sum_search[chkidoffset.s4] += cl_prob[i_prob_offset + 4];
-			if (chkidoffset.s5 >= i_offsetstart && chkidoffset.s5 < i_offsetend) sum_search[chkidoffset.s5] += cl_prob[i_prob_offset + 5];
-			if (chkidoffset.s6 >= i_offsetstart && chkidoffset.s6 < i_offsetend) sum_search[chkidoffset.s6] += cl_prob[i_prob_offset + 6];
-			if (chkidoffset.s7 >= i_offsetstart && chkidoffset.s7 < i_offsetend) sum_search[chkidoffset.s7] += cl_prob[i_prob_offset + 7];
-
-			i_prob_offset = i_prob_offset + 8;
-			//i_prob_offset8++;
-		//}
+	for (int ii_chklocal = 0; ii_chklocal < ci_groupSize / 8; ii_chklocal++) {
+		ushort8 chkid = vload8(ii_chklocal, sdataid);
+		double8 prob = vload8(ii_chklocal, sdataprob);
+		//ushort8 chkidoffset = chkid - i_local_searchoffset;
+		ushort8 chkidoffset = min( us_searchmin, max(chkid - i_local_searchoffset, us_searchmax)); //Zeroth and 10th item is summed but not saved to avoid if's
+		sum_search[chkidoffset.s0] += prob.s0;
+		sum_search[chkidoffset.s1] += prob.s1;
+		sum_search[chkidoffset.s2] += prob.s2;
+		sum_search[chkidoffset.s3] += prob.s3;
+		sum_search[chkidoffset.s4] += prob.s4;
+		sum_search[chkidoffset.s5] += prob.s5;
+		sum_search[chkidoffset.s6] += prob.s6;
+		sum_search[chkidoffset.s7] += prob.s7;
+		//if (chkidoffset.s0 >= 0 && chkidoffset.s0 < 9) sum_search[chkidoffset.s0] += prob.s0;
+		//if (chkidoffset.s1 >= 0 && chkidoffset.s1 < 9) sum_search[chkidoffset.s1] += prob.s1;
+		//if (chkidoffset.s2 >= 0 && chkidoffset.s2 < 9) sum_search[chkidoffset.s2] += prob.s2;
+		//if (chkidoffset.s3 >= 0 && chkidoffset.s3 < 9) sum_search[chkidoffset.s3] += prob.s3;
+		//if (chkidoffset.s4 >= 0 && chkidoffset.s4 < 9) sum_search[chkidoffset.s4] += prob.s4;
+		//if (chkidoffset.s5 >= 0 && chkidoffset.s5 < 9) sum_search[chkidoffset.s5] += prob.s5;
+		//if (chkidoffset.s6 >= 0 && chkidoffset.s6 < 9) sum_search[chkidoffset.s6] += prob.s6;
+		//if (chkidoffset.s7 >= 0 && chkidoffset.s7 < 9) sum_search[chkidoffset.s7] += prob.s7;
 	} //ii_searchhistogram
 
 	for (int ii_findid = 0; ii_findid < (i_local_searchoffsetend - i_local_searchoffset); ii_findid++) {
-		//if (sum_search[ii_findid] != 0) { //Save to Global Array
-			g_odata[get_group_id(0)*range_width + i_local_searchoffset + ii_findid] = sum_search[ii_findid];
-		//}
+		g_odata[get_group_id(0)*range_width + i_local_searchoffset + ii_findid] = sum_search[ii_findid+1];
 	}
 }
 
@@ -464,13 +457,15 @@ __kernel void sumrangetoarray(
 	__global double *g_odata)
 {
 	unsigned int tid = get_global_id(0); //example histo start 0, width 3008
-	double sum_search = 0;				 //example sfh start 1024, width 1024  IR start 2048 width 1024
+										 //example sfh start 1024, width 1024  IR start 2048 width 1024
 	if (tid < range_width) {			// if we can balance blocks otherwise sfh 19 w 21, IR 0 w 50008
+		double sum_search = 0;
 		for (int i = 0; i < num_groups; i++) {
 			sum_search += g_idata[i*range_width + tid];
 		}
 		if (sum_search != 0) { //Save to Global Array
 			g_odata[range_start+tid] += sum_search;
 		}
+		//tid += get_num_groups(0)*get_local_size(0);
 	}
 }

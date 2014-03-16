@@ -494,8 +494,8 @@ const char *kernelSource = "\n" \
 //#define GALMAX 5008//5000	//galmax: maximum number of galaxies in one input file
 #define NMOD 50016 //50001
 #define NZMAX 5008 //5000	//nmax: maxium number of photometric points/filters
-#define NBINMAX1 3008 //3000 //188*16doubles(128bytes)=188SIMD
-#define NBINMAX2 304 //300   //19SIMD
+#define NBINMAX1 2304 //3000 //144*16doubles(128bytes) 18K
+#define NBINMAX2 128 //300   //8SIMD 1K
 
 #define CLDF_SFH 320
 #define CLDFCHECK NMOD*CLDF_SFH
@@ -552,6 +552,10 @@ void sort2(double arr1[], double arr2[], int left, int right);
 void get_histgrid(double dv, double vmin, double vmax, int* nbin, double vout[]);
 void get_percentiles(int n, double par[], double probability[], double percentile[]);
 void degrade_hist(double delta, double min, double max, int nbin1, int * nbin2, double hist1[], double hist2[], double prob1[], double prob2[]);
+
+void get_percentilesp(int n, double par[], double probability[], double percentile[]);
+void degrade_histp(double delta, double min, double max, int nbin1, int * nbin2, double hist1[], double hist2[], double prob1[], double prob2[]);
+
 double get_hpbv(double hist1[], double hist2[], int nbin);
 
 void get_fexp3(char dstr[]);
@@ -1336,9 +1340,6 @@ int main(int argc, char *argv[]){
 		cl::Buffer d_cl_minsfh = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_minsfh, NULL);
 		cl::Buffer d_cl_minir = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, CLBLOCKSIZE_RED*sizeof(unsigned short), cl_minir, NULL);
 
-		static double cl_range[7 * 2 * NBINMAX1];
-		cl::Buffer d_cl_range = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, gpu_compute * 2 * NBINMAX1*sizeof(double), cl_range, NULL);
-
 		cl::Buffer d_sfh_hist = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NMOD*sizeof(double), sfh_hist, NULL);
 		cl::Buffer d_ir_hist = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NMOD*sizeof(double), ir_hist, NULL);
 		cl::Buffer d_pa = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, NBINMAX1*sizeof(double), pa, NULL);
@@ -1428,6 +1429,9 @@ int main(int argc, char *argv[]){
 		cl::NDRange globalSize_reduce(CLBLOCKSIZE_RED*gpu_compute);
 		
 		// Prepare kernel program.
+		static double cl_range[7 * 8 * NBINMAX1];
+		cl::Buffer d_cl_range = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, gpu_compute * 8 * NBINMAX1*sizeof(double), cl_range, NULL);
+
 		cl::Kernel kernel_sumidtorange(fit_program, "sumidtorange");
 		//argument 0 will be i_m - number of models to process
 		//argument 1 const int ci_groupSize,
@@ -1438,27 +1442,28 @@ int main(int argc, char *argv[]){
 		kernel_sumidtorange.setArg(6, d_cl_prob);
 		kernel_sumidtorange.setArg(7, d_cl_range); //Temporary Global to send to sumRangetoarray
 		//argument 8 is local scratch
+		//argument 9 is local scratch
 
 		// Prepare kernel program.
 		cl::Kernel kernel_sumrangetoarray(fit_program, "sumrangetoarray");
 		//argument 0 will be  - range start
 		//argument 1 will be  - range width
 		//argument 2 will be - num groups /
-		kernel_sumrangetoarray.setArg(2, gpu_compute * 2);
+		kernel_sumrangetoarray.setArg(2, gpu_compute * 8);
 		kernel_sumrangetoarray.setArg(3, d_cl_range); //Temporary Global to send to sumRangetoarray
 		//argument 4 will be - Array to update. d_sfh_hist d_ir_hist d_pa d_psfr d_pldust d_pmdust
 		//kernel_sumrangetoarray.setArg(4, d_sfh_hist);
 
 		// Set global workload size.
 		cl::NDRange localSize_range(CLLOCAL_RANGE);
-		cl::NDRange globalSize_range(CLLOCAL_RANGE*gpu_compute * 2);
+		cl::NDRange globalSize_range(CLLOCAL_RANGE*gpu_compute * 8);
 
-		std::cout << " Range LocalSize " << CLLOCAL_RANGE << " Global Size " << CLLOCAL_RANGE*gpu_compute * 2 << endl;
+		std::cout << " Range LocalSize " << CLLOCAL_RANGE << " Global Size " << CLLOCAL_RANGE*gpu_compute * 8 << endl;
 
 		cl::NDRange localSize_range2(CLBLOCKSIZE_RED);
-		cl::NDRange globalSize_range2(CLBLOCKSIZE_RED*gpu_compute * 2);
+		cl::NDRange globalSize_range2(CLBLOCKSIZE_RED*gpu_compute*2);
 
-		std::cout << " Range2 LocalSize " << CLBLOCKSIZE_RED << " Global Size " << CLBLOCKSIZE_RED*gpu_compute * 2 << endl;
+		std::cout << " Range2 LocalSize " << CLBLOCKSIZE_RED << " Global Size " << CLBLOCKSIZE_RED*gpu_compute*2 << endl;
 
 		// Event that will be used for getting response.
 		cl::Event event;
@@ -1471,7 +1476,8 @@ int main(int argc, char *argv[]){
 		std::clock_t arrtimedf = 0;
 		cl_ulong start, end;
 		double cltime = 0;
-		double cltimehisto = 0;
+		double cltimehisto1 = 0;
+		double cltimehisto2 = 0;
 		int i_kernel = 0;
 
 		//Load withindf for first sfh.
@@ -1491,7 +1497,7 @@ int main(int argc, char *argv[]){
 		i_sfh = 0;
 		i_ir = 0;
 
-		while (i_sfh + i_sfhoffset<n_sfh){
+		while (i_sfh + i_sfhoffset< n_sfh){
 			int i_m = 0;
 
 			clckstart = std::clock();
@@ -1671,14 +1677,15 @@ int main(int argc, char *argv[]){
 //Reduce Histogram
 			//Part1 Reduce pa histogram
 			kernel_sumidtorange.setArg(0, i_m);
-			int cl_groupsize = ceil(i_m / (double)(gpu_compute * 2)); //18296
-			int cl_threadsize = ceil(cl_groupsize / (double)CLLOCAL_RANGE);	  //18296/256=72 *256=18304
+			int cl_groupsize = ceil(i_m / (double)(gpu_compute * 8)); //4574
+			int cl_threadsize = ceil(cl_groupsize / (double)CLLOCAL_RANGE);	  //4574/256=18 *256=4608 *10b<=48k Localsize
 			kernel_sumidtorange.setArg(1, cl_groupsize);
 			kernel_sumidtorange.setArg(2, cl_threadsize);
 			kernel_sumidtorange.setArg(3, 0);
 			kernel_sumidtorange.setArg(4, NBINMAX1);
 			kernel_sumidtorange.setArg(5, d_ibin_pa);
-			kernel_sumidtorange.setArg(8, cl_threadsize*CLLOCAL_RANGE * sizeof(unsigned short), NULL); //Local Scratch
+			kernel_sumidtorange.setArg(8, cl_threadsize*CLLOCAL_RANGE * sizeof(unsigned short), NULL); //Local Scratch ushort
+			kernel_sumidtorange.setArg(9, cl_threadsize*CLLOCAL_RANGE * sizeof(double), NULL); //Local Scratch double
 
 			queue.enqueueNDRangeKernel(kernel_sumidtorange, cl::NullRange, globalSize_range, localSize_range,
 				NULL, &event);
@@ -1687,7 +1694,7 @@ int main(int argc, char *argv[]){
 
 			start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
 			end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
-			cltimehisto = cltimehisto + (end - start);
+			cltimehisto1 = cltimehisto1 + (end - start);
 
 			//Part2 Reduce pa histogram
 			kernel_sumrangetoarray.setArg(0, 0);
@@ -1701,7 +1708,7 @@ int main(int argc, char *argv[]){
 
 			start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
 			end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
-			cltimehisto = cltimehisto + (end - start);
+			cltimehisto2 = cltimehisto2 + (end - start);
 
 			//Manual Reduce HistoGram
 			// Read processed model data back from device memory.
@@ -1727,12 +1734,6 @@ int main(int argc, char *argv[]){
 
 			if (i_sfh + i_sfhoffset >= n_sfh) {
 				std::cout << "\r100% done... " << n_sfh << " opt. models - fit finished" << endl;
-				std::cout << "Time for kernel to execute " << cltime / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltime * 1.e-9 << endl;
-				std::cout << "Time for memory transfers  " << (memtime / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (memtime / (double)CLOCKS_PER_SEC) << endl;
-				std::cout << "Time for id array processing  " << (arrtime / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtime / (double)CLOCKS_PER_SEC) << endl;
-				std::cout << "Time for df kernel processing  " << (arrtimedf / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtimedf / (double)CLOCKS_PER_SEC) << endl;
-				std::cout << "Time for model array processing  " << (arrtime1 / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtime1 / (double)CLOCKS_PER_SEC) << endl;
-				std::cout << "Time for model kernel to execute " << cltimehisto / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltimehisto * 1.e-9 << endl;
 			}
 			else if ((i_sfh + i_sfhoffset) * 100 / n_sfh > writePercentage){
 				std::cout << "\r " << writePercentage << "% done... " << (n_sfh * writePercentage) / 100 << "/" << n_sfh << " opt. models" << endl;
@@ -1741,7 +1742,14 @@ int main(int argc, char *argv[]){
 
 		} //while (i_sfh<n_sfh)
 
-		queue.enqueueReadBuffer(d_pa, CL_TRUE, 0,  NBINMAX1*sizeof(double), pa);
+		std::cout << "Time for kernel to execute             " << cltime / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltime * 1.e-9 << endl;
+		std::cout << "Time for memory transfers              " << (memtime / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (memtime / (double)CLOCKS_PER_SEC) << endl;
+		std::cout << "Time for id array processing           " << (arrtime / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtime / (double)CLOCKS_PER_SEC) << endl;
+		std::cout << "Time for df kernel processing          " << (arrtimedf / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtimedf / (double)CLOCKS_PER_SEC) << endl;
+		std::cout << "Time for model array processing        " << (arrtime1 / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtime1 / (double)CLOCKS_PER_SEC) << endl;
+		std::cout << "Time for pa rangeid to execute         " << cltimehisto1 / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltimehisto1 * 1.e-9 << endl;
+		std::cout << "Time for pa rangesum kernel to execute " << cltimehisto2 / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltimehisto2 * 1.e-9 << endl;
+		queue.enqueueReadBuffer(d_pa, CL_TRUE, 0, NBINMAX1*sizeof(double), pa);
 	}
 	catch (cl::Error error){
 		//CL_INVALID_ARG_INDEX
@@ -1808,7 +1816,7 @@ int main(int argc, char *argv[]){
 	// ---------------------------------------------------------------------------
 	// Compute percentiles of the (normalized) likelihood distributions
 	// ---------------------------------------------------------------------------
-	for (i = 0; i<3000; i++){
+	for (i = 0; i<NBINMAX1; i++){
 		psfh[i] = psfh[i] / ptot;
 		pir[i] = pir[i] / ptot;
 		pmu[i] = pmu[i] / ptot;
@@ -2354,6 +2362,22 @@ void degrade_hist(double delta, double min, double max, int nbin1, int * nbin2, 
 	}
 }
 
+void degrade_histp(double delta, double min, double max, int nbin1, int * nbin2, double hist1[], double hist2[], double prob1[], double prob2[]){
+	int i = 0;
+	int ibin = 0;
+	double max2 = 0;
+	double aux;
+
+	max2 = max + (delta / 2);
+
+	get_histgrid(delta, min, max2, nbin2, hist2);
+	for (i = 0; i<nbin1; i++){
+		aux = ((hist1[i] - min) / (max - min))*(*nbin2);
+		ibin = (int)(aux);
+		prob2[ibin] = prob2[ibin] + prob1[i];
+	}
+}
+
 //---------------------------------------------------------------------------
 // Build histogram grid (i.e. vector of bins)
 //---------------------------------------------------------------------------
@@ -2402,6 +2426,30 @@ void get_percentiles(int n, double par[], double probability[], double percentil
 		}
 		n_perc[i] = n_perc[i] - 1;
 		percentile[i] = par[n_perc[i]];
+	}
+}
+
+void get_percentilesp(int n, double par[], double probability[], double percentile[]){
+	int i = 0;
+	double pless = 0;
+	int n_perc[5];
+	double limit[5] = { 0.025, 0.16, 0.50, 0.84, 0.975 };
+	sort2(par, probability, 0, n - 1);
+
+	for (i = 0; i<5; i++){
+		cout << "i " << i << endl;
+		n_perc[i] = 0;
+		pless = 0;
+		while (pless <= limit[i]){
+			//cout << " pless " << pless ;
+			//cout << " n perc " << n_perc[i];
+			pless = pless + probability[n_perc[i]];
+			n_perc[i]++;
+		}
+		n_perc[i] = n_perc[i] - 1;
+		percentile[i] = par[n_perc[i]];
+		cout << "perc " << percentile[i] << endl;
+		cout << "n perc " << n_perc[i] << endl;
 	}
 }
 
