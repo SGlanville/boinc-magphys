@@ -92,393 +92,477 @@ protected:
 };
 #endif
 
-#define READCL //Read CL From File Or Constant *KernelSource
+//#define READCL //Read CL From File Or Constant *KernelSource
 
 // OpenCL kernel.
 #ifndef READCL
 const char *kernelSource = "\n" \
-"// Enable double precision.																																   \n" \
-"// Enable double precision.																													\n" \
-"#pragma OPENCL EXTENSION cl_khr_fp64 : enable																									\n" \
-"																																				\n" \
-"// Some constants copied from main host program.																								\n" \
-"#define NMAX 56																																\n" \
-"#define NMOD 50016																																\n" \
-"#define blockSize 256	//BlockSize for sumprob																									\n" \
-"																																				\n" \
-"// Struct containing var constants read by kernel																								\n" \
-"// threads.										 	 																						\n" \
-"typedef struct clconstants {																													\n" \
-"	int nbin_sfr;																																\n" \
-"	int nbin_a;																																	\n" \
-"	int nbin_ld;																																\n" \
-"	int nbin_md;																																\n" \
-"	double a_max;																																\n" \
-"	double a_min;																																\n" \
-"	double sfr_max;																																\n" \
-"	double sfr_min;																																\n" \
-"	double ld_max;																																\n" \
-"	double ld_min;																																\n" \
-"	double md_max;																																\n" \
-"	double md_min;																																\n" \
-"	int nfilt;																																	\n" \
-"	int nfilt_sfh;																																\n" \
-"	int nfilt_mix;																																\n" \
-"	int i_gal;																																	\n" \
-"	double df;																																	\n" \
-"	int n_sfh;																																	\n" \
-"	int n_ir;																																	\n" \
-"} clconstants_t;																																\n" \
-"																																				\n" \
-"// Identifier struct. Used to identify kernel thread to																						\n" \
-"// a sfh and ir model combination.																												\n" \
-"typedef struct clid {																															\n" \
-"	ushort i_sfh;																																\n" \
-"	ushort i_ir;																																\n" \
-"} clid_t;																																		\n" \
-"																																				\n" \
-"//union {																																		\n" \
-"//	clid_t u_id;																																\n" \
-"//	long   i_id;																																\n" \
-"//};																																			\n" \
-"																																				\n" \
-"// Struct to define arrays of indexes and models																								\n" \
-"// used by kernel threads.								 																						\n" \
-"typedef struct clmod_sfh {																														\n" \
-"	double lssfr;																																\n" \
-"	double logldust;																															\n" \
-"	double ldust;																																\n" \
-"	double flux_sfh[NMAX];																														\n" \
-"} clmod_sfh_t;																																	\n" \
-"																																				\n" \
-"typedef struct clmod_ir {																														\n" \
-"	double mdust;																																\n" \
-"	double flux_ir[NMAX];																														\n" \
-"} clmod_ir_t;																																	\n" \
-"																																				\n" \
-"__kernel void fit(const int ci_idsSize,																										\n" \
-"	__constant clconstants_t* ct_clconstants,																									\n" \
-"	__global const clmod_sfh_t* mods_sfh,																										\n" \
-"	__global const clmod_ir_t* mods_ir,																											\n" \
-"	__global const double* flux_obs,																											\n" \
-"	__global const double* w,																													\n" \
-"	__global const double* flux_obs_mask,																										\n" \
-"	__global const double* filt_sfh_mask,																										\n" \
-"	__global const double* filt_ir_mask,																										\n" \
-"	__global const clid_t* ids,																													\n" \
-"	__global double* cl_chi2,																													\n" \
-"	__global double* cl_prob,																													\n" \
-"	__global ushort* ibin_pa,																													\n" \
-"	__global ushort* ibin_psfr,																													\n" \
-"	__global ushort* ibin_pldust,																												\n" \
-"	__global ushort* ibin_pmdust																												\n" \
-"	)																																			\n" \
-"{																																				\n" \
-"	// Get kernel thread id for matching with array indexes.																					\n" \
-"	int global_index = get_global_id(0);																										\n" \
-"	int local_index = get_local_id(0);																											\n" \
-"																																				\n" \
-"	// Only continue if our id is less than batch max. The id can sometimes		 																\n" \
-"	// be greater if the global work size is greater than values we're working with. 															\n" \
-"	if (global_index < ci_idsSize){																												\n" \
-"																																				\n" \
-"		// Set some variables in private memory space.																							\n" \
-"		ushort k = 0;																															\n" \
-"		double num = 0;																															\n" \
-"		double den = 0;																															\n" \
-"		ushort i_sfh = ids[global_index].i_sfh;																									\n" \
-"		ushort i_ir = ids[global_index].i_ir;																									\n" \
-"		ushort nfilt = ct_clconstants->nfilt;																									\n" \
-"		ushort nfilt_sfh = ct_clconstants->nfilt_sfh;																							\n" \
-"		ushort nfilt_mix = ct_clconstants->nfilt_mix;																							\n" \
-"		__global clmod_sfh_t *msfh = &mods_sfh[i_sfh];																							\n" \
-"		__global clmod_ir_t *mir = &mods_ir[i_ir];																								\n" \
-"																																				\n" \
-"		double flux_mod[NMAX];																													\n" \
-"		for (k = 0; k < nfilt_sfh - nfilt_mix; k++){																							\n" \
-"			flux_mod[k] = msfh->flux_sfh[k];																									\n" \
-"		}																																		\n" \
-"		for (k = nfilt_sfh - nfilt_mix; k < nfilt_sfh; k++){																					\n" \
-"			flux_mod[k] = msfh->flux_sfh[k] + mir->flux_ir[k];																					\n" \
-"		}																																		\n" \
-"		for (k = nfilt_sfh; k < nfilt; k++){																									\n" \
-"			flux_mod[k] = mir->flux_ir[k];																										\n" \
-"		}																																		\n" \
-"																																				\n" \
-"		// Compute the scaling factor a.						 																				\n" \
-"		for (k = 0; k<nfilt; k++){																												\n" \
-"			if (flux_obs[k]>0) {																												\n" \
-"				num = num + (flux_mod[k] * flux_obs[k] * w[k]);																					\n" \
-"				den = den + (pow(flux_mod[k], 2) * w[k]);																						\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"																																				\n" \
-"		double a = num / den;																													\n" \
-"																																				\n" \
-"		// Compute chi^2 goodness of fit.						 																				\n" \
-"		double chi2 = 0;																														\n" \
-"		for (k = 0; k < nfilt_sfh; k++){																										\n" \
-"			if (flux_obs[k]>0) {																												\n" \
-"				chi2 = chi2 + ((pow(flux_obs[k] - (a * flux_mod[k]), 2)) * w[k]);																\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		if (chi2 < 600){																														\n" \
-"			for (k = nfilt_sfh; k < nfilt; k++){																								\n" \
-"				if (flux_obs[k]>0) {																											\n" \
-"					chi2 = chi2 + ((pow(flux_obs[k] - (a * flux_mod[k]), 2)) * w[k]);															\n" \
-"				}																																\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"																																				\n" \
-"		// Calculate probability.							 																					\n" \
-"		double prob = exp(-0.5 * chi2);																											\n" \
-"		//m->chi2=chi2;									 																						\n" \
-"		//m->prob = prob;								 																						\n" \
-"		cl_chi2[global_index] = chi2;																											\n" \
-"		cl_prob[global_index] = prob;																											\n" \
-"																																				\n" \
-"		// Calculate marginal probability density functions. Instead			 																\n" \
-"		// of writing prob values, we instead write the index of bin			 																\n" \
-"		// for non-parallelized processing.						 																				\n" \
-"		int ibin;																																\n" \
-"		ushort usbin;																															\n" \
-"		double aux;																																\n" \
-"																																				\n" \
-"		a = log10(a);																															\n" \
-"																																				\n" \
-"		// Mstar									 																							\n" \
-"		aux = ((a - ct_clconstants->a_min) / (ct_clconstants->a_max - ct_clconstants->a_min)) * ct_clconstants->nbin_a;							\n" \
-"		ibin = (int)(aux);																														\n" \
-"		usbin = max(0, min(ibin, ct_clconstants->nbin_a - 1));																					\n" \
-"		//m->ibin_pa=usbin;																														\n" \
-"		ibin_pa[global_index] = usbin;																											\n" \
-"																																				\n" \
-"		// SFR_0.1Gyr									 																						\n" \
-"		aux = ((msfh->lssfr + a - ct_clconstants->sfr_min) / (ct_clconstants->sfr_max - ct_clconstants->sfr_min))* ct_clconstants->nbin_sfr;	\n" \
-"		ibin = (int)(aux);																														\n" \
-"		usbin = max(0, min(ibin, ct_clconstants->nbin_sfr - 1));																				\n" \
-"		ibin_psfr[global_index] = usbin;																										\n" \
-"																																				\n" \
-"		// Ldust									 																							\n" \
-"		aux = ((msfh->logldust + a - ct_clconstants->ld_min) / (ct_clconstants->ld_max - ct_clconstants->ld_min))* ct_clconstants->nbin_ld;		\n" \
-"		ibin = (int)(aux);																														\n" \
-"		usbin = max(0, min(ibin, ct_clconstants->nbin_ld - 1));																					\n" \
-"		//m->ibin_pldust=usbin;																													\n" \
-"		ibin_pldust[global_index] = usbin;																										\n" \
-"																																				\n" \
-"		// Mdust									 																							\n" \
-"		aux = log10(mir->mdust * msfh->ldust * pow(10.0, a));																					\n" \
-"		aux = ((aux - ct_clconstants->md_min) / (ct_clconstants->md_max - ct_clconstants->md_min)) * ct_clconstants->nbin_md;					\n" \
-"		ibin = (int)(aux);																														\n" \
-"		usbin = max(0, min(ibin, ct_clconstants->nbin_md - 1));																					\n" \
-"		//m->ibin_pmdust=usbin;																													\n" \
-"		ibin_pmdust[global_index] = usbin;																										\n" \
-"																																				\n" \
-"	} //if global_index < ci_idsSize											 																\n" \
-"}																																				\n" \
-"																																				\n" \
-"__kernel void sumprob(unsigned int ci_idsSize, __global double *g_idata, __global double *g_odata, __local volatile double* sdata)				\n" \
-"{																																				\n" \
-"	// perform first level of reduction,																										\n" \
-"	// reading from global memory, writing to shared memory																						\n" \
-"	unsigned int tid = get_local_id(0);																											\n" \
-"	unsigned int i = get_group_id(0)*(get_local_size(0) * 2) + get_local_id(0);																	\n" \
-"	unsigned int gridSize = blockSize * 2 * get_num_groups(0);																					\n" \
-"	sdata[tid] = 0;																																\n" \
-"																																				\n" \
-"	// we reduce multiple elements per thread.  The number is determined by the 																\n" \
-"	// number of active thread blocks. More blocks will result																					\n" \
-"	// in a larger gridSize and therefore fewer elements per thread																				\n" \
-"	while (i < ci_idsSize)																														\n" \
-"	{																																			\n" \
-"		sdata[tid] += g_idata[i];																												\n" \
-"		// this is optimized away for powerOf2 sized arrays																						\n" \
-"		sdata[tid] += g_idata[i + blockSize];																									\n" \
-"		i += gridSize;																															\n" \
-"	}																																			\n" \
-"																																				\n" \
-"	barrier(CLK_LOCAL_MEM_FENCE);																												\n" \
-"																																				\n" \
-"	// do reduction in shared mem																												\n" \
-"	if (blockSize >= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } barrier(CLK_LOCAL_MEM_FENCE); }								\n" \
-"	if (blockSize >= 256) { if (tid < 128) { sdata[tid] += sdata[tid + 128]; } barrier(CLK_LOCAL_MEM_FENCE); }									\n" \
-"	if (blockSize >= 128) { if (tid <  64) { sdata[tid] += sdata[tid + 64]; } barrier(CLK_LOCAL_MEM_FENCE); }									\n" \
-"																																				\n" \
-"	if (tid < 32)																																\n" \
-"	{																																			\n" \
-"		if (blockSize >= 64) { sdata[tid] += sdata[tid + 32]; }																					\n" \
-"		if (blockSize >= 32) { sdata[tid] += sdata[tid + 16]; }																					\n" \
-"		if (blockSize >= 16) { sdata[tid] += sdata[tid + 8]; }																					\n" \
-"		if (blockSize >= 8) { sdata[tid] += sdata[tid + 4]; }																					\n" \
-"		if (blockSize >= 4) { sdata[tid] += sdata[tid + 2]; }																					\n" \
-"		if (blockSize >= 2) { sdata[tid] += sdata[tid + 1]; }																					\n" \
-"	}																																			\n" \
-"																																				\n" \
-"	// write result for this block to global mem 																								\n" \
-"	if (tid == 0) g_odata[get_group_id(0)] = sdata[0];																							\n" \
-"}																																				\n" \
-"																																				\n" \
-"__kernel void minchi(unsigned int ci_idsSize, __global const clid_t* ids, __global double *g_idata,											\n" \
-"	__global double *g_odata, __global ushort *g_o_sfh, __global ushort *g_o_ir,																\n" \
-"	__local volatile double* sdata, __local volatile ushort* s_sfh, __local volatile ushort* s_ir)												\n" \
-"{																																				\n" \
-"	//Need to added checks if chi2 is equal then use lowest sfh and ir																			\n" \
-"																																				\n" \
-"	// perform first level of reduction,																										\n" \
-"	// reading from global memory, writing to shared memory																						\n" \
-"	unsigned int tid = get_local_id(0);																											\n" \
-"	unsigned int i = get_group_id(0)*(get_local_size(0) * 2) + get_local_id(0);																	\n" \
-"	unsigned int gridSize = blockSize * 2 * get_num_groups(0);																					\n" \
-"	sdata[tid] = INFINITY;																														\n" \
-"																																				\n" \
-"	// we reduce multiple elements per thread.  The number is determined by the 																\n" \
-"	// number of active thread blocks. More blocks will result																					\n" \
-"	// in a larger gridSize and therefore fewer elements per thread																				\n" \
-"	while (i < ci_idsSize)																														\n" \
-"	{																																			\n" \
-"		//this is optimized away for powerOf2 sized arrays																						\n" \
-"		if (g_idata[i] < sdata[tid]) {																											\n" \
-"			sdata[tid] = g_idata[i]; s_sfh[tid] = ids[i].i_sfh; s_ir[tid] = ids[i].i_ir;														\n" \
-"		}																																		\n" \
-"		if (g_idata[i] == sdata[tid] && (ids[i].i_sfh * NMOD) + ids[i].i_ir < (s_sfh[tid] * NMOD) + s_ir[tid]) {								\n" \
-"			s_sfh[tid] = ids[i].i_sfh; s_ir[tid] = ids[i].i_ir;																					\n" \
-"		}																																		\n" \
-"		if (g_idata[i + blockSize] < sdata[tid]) {																								\n" \
-"			sdata[tid] = g_idata[i + blockSize]; s_sfh[tid] = ids[i + blockSize].i_sfh; s_ir[tid] = ids[i + blockSize].i_ir;					\n" \
-"		}																																		\n" \
-"		if (g_idata[i + blockSize] == sdata[tid] && (ids[i + blockSize].i_sfh * NMOD) + ids[i + blockSize].i_ir < (s_sfh[tid] * NMOD) + s_ir[tid]) {  \n" \
-"			s_sfh[tid] = ids[i + blockSize].i_sfh; s_ir[tid] = ids[i + blockSize].i_ir;															\n" \
-"		}																																		\n" \
-"		i += gridSize;																															\n" \
-"	}																																			\n" \
-"																																				\n" \
-"	barrier(CLK_LOCAL_MEM_FENCE);																												\n" \
-"																																				\n" \
-"	// do reduction in shared mem																												\n" \
-"	if (blockSize >= 512) {																													\n" \
-"		if (tid < 256) {																														\n" \
-"			if (sdata[tid + 256] < sdata[tid]) {																								\n" \
-"				sdata[tid] = sdata[tid + 256]; s_sfh[tid] = s_sfh[tid + 256]; s_ir[tid] = s_ir[tid + 256];										\n" \
-"			}																																	\n" \
-"			if (sdata[tid + 256] == sdata[tid] && (s_sfh[tid + 256] * NMOD) + s_ir[tid + 256] < (s_sfh[tid] * NMOD) + s_ir[tid]) {				\n" \
-"				s_sfh[tid] = s_sfh[tid + 256]; s_ir[tid] = s_ir[tid + 256];																		\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		barrier(CLK_LOCAL_MEM_FENCE);																											\n" \
-"	}																																			\n" \
-"	if (blockSize >= 256) {																														\n" \
-"		if (tid < 128) {																														\n" \
-"			if (sdata[tid + 128] < sdata[tid]) {																								\n" \
-"				sdata[tid] = sdata[tid + 128]; s_sfh[tid] = s_sfh[tid + 128]; s_ir[tid] = s_ir[tid + 128];										\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 128] == sdata[tid] && (s_sfh[tid + 128] * NMOD) + s_ir[tid + 128] < (s_sfh[tid] * NMOD) + s_ir[tid]) {			\n" \
-"				s_sfh[tid] = s_sfh[tid + 128]; s_ir[tid] = s_ir[tid + 128];																		\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		barrier(CLK_LOCAL_MEM_FENCE);																											\n" \
-"	}																																			\n" \
-"	if (blockSize >= 128) {																														\n" \
-"		if (tid < 64) {																															\n" \
-"			if (sdata[tid + 64] < sdata[tid]) {																									\n" \
-"				sdata[tid] = sdata[tid + 64]; s_sfh[tid] = s_sfh[tid + 64]; s_ir[tid] = s_ir[tid + 64];											\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 64] == sdata[tid] && (s_sfh[tid + 64] * NMOD) + s_ir[tid + 64] < (s_sfh[tid] * NMOD) + s_ir[tid]) {			\n" \
-"				s_sfh[tid] = s_sfh[tid + 64]; s_ir[tid] = s_ir[tid + 64];																		\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		barrier(CLK_LOCAL_MEM_FENCE);																											\n" \
-"	}																																			\n" \
-"																																				\n" \
-"	if (tid < 32)																																\n" \
-"	{																																			\n" \
-"		if (blockSize >= 64) {																													\n" \
-"			if (sdata[tid + 32] < sdata[tid]) {																									\n" \
-"				sdata[tid] = sdata[tid + 32]; s_sfh[tid] = s_sfh[tid + 32]; s_ir[tid] = s_ir[tid + 32];											\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 32] == sdata[tid] && (s_sfh[tid + 32] * NMOD) + s_ir[tid + 32] < (s_sfh[tid] * NMOD) + s_ir[tid]) {			\n" \
-"				s_sfh[tid] = s_sfh[tid + 32]; s_ir[tid] = s_ir[tid + 32];																		\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		if (blockSize >= 32) {																													\n" \
-"			if (sdata[tid + 16] < sdata[tid]) {																									\n" \
-"				sdata[tid] = sdata[tid + 16]; s_sfh[tid] = s_sfh[tid + 16]; s_ir[tid] = s_ir[tid + 16];											\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 16] == sdata[tid] && (s_sfh[tid + 16] * NMOD) + s_ir[tid + 16] < (s_sfh[tid] * NMOD) + s_ir[tid]) {			\n" \
-"				s_sfh[tid] = s_sfh[tid + 16]; s_ir[tid] = s_ir[tid + 16];																		\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		if (blockSize >= 16) {																													\n" \
-"			if (sdata[tid + 8] < sdata[tid]) {																									\n" \
-"				sdata[tid] = sdata[tid + 8]; s_sfh[tid] = s_sfh[tid + 8]; s_ir[tid] = s_ir[tid + 8];											\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 8] == sdata[tid] && (s_sfh[tid + 8] * NMOD) + s_ir[tid + 8] < (s_sfh[tid] * NMOD) + s_ir[tid]) {				\n" \
-"				s_sfh[tid] = s_sfh[tid + 8]; s_ir[tid] = s_ir[tid + 8];																			\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		if (blockSize >= 8) {																													\n" \
-"			if (sdata[tid + 4] < sdata[tid]) {																									\n" \
-"				sdata[tid] = sdata[tid + 4]; s_sfh[tid] = s_sfh[tid + 4]; s_ir[tid] = s_ir[tid + 4];											\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 4] == sdata[tid] && (s_sfh[tid + 4] * NMOD) + s_ir[tid + 4] < (s_sfh[tid] * NMOD) + s_ir[tid]) {				\n" \
-"				s_sfh[tid] = s_sfh[tid + 4]; s_ir[tid] = s_ir[tid + 4];																			\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		if (blockSize >= 4) {																													\n" \
-"			if (sdata[tid + 2] < sdata[tid]) {																									\n" \
-"				sdata[tid] = sdata[tid + 2]; s_sfh[tid] = s_sfh[tid + 2]; s_ir[tid] = s_ir[tid + 2];											\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 2] == sdata[tid] && (s_sfh[tid + 2] * NMOD) + s_ir[tid + 2] < (s_sfh[tid] * NMOD) + s_ir[tid]) {				\n" \
-"				s_sfh[tid] = s_sfh[tid + 2]; s_ir[tid] = s_ir[tid + 2];																			\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"		if (blockSize >= 2) {																													\n" \
-"			if (sdata[tid + 1] < sdata[tid]) {																									\n" \
-"				sdata[tid] = sdata[tid + 1]; s_sfh[tid] = s_sfh[tid + 1]; s_ir[tid] = s_ir[tid + 1];											\n" \
-"			}																																	\n" \
-"			else if (sdata[tid + 1] == sdata[tid] && (s_sfh[tid + 1] * NMOD) + s_ir[tid + 1] < (s_sfh[tid] * NMOD) + s_ir[tid]) {				\n" \
-"				s_sfh[tid] = s_sfh[tid + 1]; s_ir[tid] = s_ir[tid + 1];																			\n" \
-"			}																																	\n" \
-"		}																																		\n" \
-"	}																																			\n" \
-"																																				\n" \
-"	// write result for this block to global mem 																								\n" \
-"	if (tid == 0) {																																\n" \
-"		g_odata[get_group_id(0)] = sdata[0];																									\n" \
-"		g_o_sfh[get_group_id(0)] = s_sfh[0];																									\n" \
-"		g_o_ir[get_group_id(0)] = s_ir[0];																										\n" \
-"	}																																			\n" \
-"}																																				\n" \
-"																																				\n" \
-"__kernel void check_df(const int start_sfh,																									\n" \
-"	__constant clconstants_t* ct_clconstants,																									\n" \
-"	__global const double* fmu_sfh,																												\n" \
-"	__global const double* fmu_ir,																												\n" \
-"	__global unsigned int* withindf																												\n" \
-"	)																																			\n" \
-"{																																				\n" \
-"	// Get kernel thread id for matching with array indexes.																					\n" \
-"	int i_idx = get_global_id(0) * 32;																											\n" \
-"	int i_sfhdiff = i_idx / NMOD;																												\n" \
-"	int i_ir = i_idx - (i_sfhdiff * NMOD);																										\n" \
-"	int i_sfh = start_sfh + i_sfhdiff;																											\n" \
-"	int k;																																		\n" \
-"																																				\n" \
-"	unsigned int ui_df = 0; //All False																											\n" \
-"	unsigned int ui_pow = 1;																													\n" \
-"																																				\n" \
-"	if (i_sfh < ct_clconstants->n_sfh && i_ir < ct_clconstants->n_ir){																			\n" \
-"		for (k = 0; k < 32 && i_ir < ct_clconstants->n_ir; k++) {																				\n" \
-"			if (fabs(fmu_sfh[i_sfh] - fmu_ir[i_ir]) <= ct_clconstants->df) {																	\n" \
-"				ui_df = ui_df | ui_pow;																											\n" \
-"			}																																	\n" \
-"			i_ir++;																																\n" \
-"			ui_pow = ui_pow << 1;																												\n" \
-"		}																																		\n" \
-"	}																																			\n" \
-"																																				\n" \
-"	withindf[get_global_id(0)] = ui_df;																											\n" \
-"																																				\n" \
-"}																																				\n" \
+"// Enable double precision.																															\n" \
+"#pragma OPENCL EXTENSION cl_khr_fp64 : enable																											\n" \
+"																																						\n" \
+"// Some constants copied from main host program.																										\n" \
+"#define NMAX 56																																		\n" \
+"#define NMOD 50016																																		\n" \
+"#define blockSize 256	//BlockSize for sumprob																											\n" \
+"																																						\n" \
+"// Struct containing var constants read by kernel																										\n" \
+"// threads.										 	 																								\n" \
+"typedef struct clconstants {																															\n" \
+"	int nbin_sfr;																																		\n" \
+"	int nbin_a;																																			\n" \
+"	int nbin_ld;																																		\n" \
+"	int nbin_md;																																		\n" \
+"	double a_max;																																		\n" \
+"	double a_min;																																		\n" \
+"	double sfr_max;																																		\n" \
+"	double sfr_min;																																		\n" \
+"	double ld_max;																																		\n" \
+"	double ld_min;																																		\n" \
+"	double md_max;																																		\n" \
+"	double md_min;																																		\n" \
+"	int nfilt;																																			\n" \
+"	int nfilt_sfh;																																		\n" \
+"	int nfilt_mix;																																		\n" \
+"	int i_gal;																																			\n" \
+"	double df;																																			\n" \
+"	int n_sfh;																																			\n" \
+"	int n_ir;																																			\n" \
+"} clconstants_t;																																		\n" \
+"																																						\n" \
+"// Struct to define arrays of indexes and models																										\n" \
+"// used by kernel threads.								 																								\n" \
+"typedef struct clmod_sfh {																																\n" \
+"	double lssfr;																																		\n" \
+"	double logldust;																																	\n" \
+"	double ldust;																																		\n" \
+"	double flux_sfh[NMAX];																																\n" \
+"} clmod_sfh_t;																																			\n" \
+"																																						\n" \
+"typedef struct clmod_ir {																																\n" \
+"	double mdust;																																		\n" \
+"	double flux_ir[NMAX];																																\n" \
+"} clmod_ir_t;																																			\n" \
+"																																						\n" \
+"__kernel void fit(const int ci_idsSize,																												\n" \
+"	__constant clconstants_t* ct_clconstants,																											\n" \
+"	__global const clmod_sfh_t* mods_sfh,																												\n" \
+"	__global const clmod_ir_t* mods_ir,																													\n" \
+"	__global const double* flux_obs,																													\n" \
+"	__global const double* w,																															\n" \
+"	__global const double* flux_obs_mask,																												\n" \
+"	__global const double* filt_sfh_mask,																												\n" \
+"	__global const double* filt_ir_mask,																												\n" \
+"	__global const ushort* cl_sfh,																														\n" \
+"	__global const ushort* cl_ir,																														\n" \
+"	__global double* cl_chi2,																															\n" \
+"	__global double* cl_prob,																															\n" \
+"	__global ushort* ibin_pa,																															\n" \
+"	__global ushort* ibin_psfr,																															\n" \
+"	__global ushort* ibin_pldust,																														\n" \
+"	__global ushort* ibin_pmdust																														\n" \
+"	)																																					\n" \
+"{																																						\n" \
+"	// Get kernel thread id for matching with array indexes.																							\n" \
+"	int global_index = get_global_id(0);																												\n" \
+"	int local_index = get_local_id(0);																													\n" \
+"																																						\n" \
+"	// Only continue if our id is less than batch max. The id can sometimes		 																		\n" \
+"	// be greater if the global work size is greater than values we're working with. 																	\n" \
+"	if (global_index < ci_idsSize){																														\n" \
+"																																						\n" \
+"		// Set some variables in private memory space.																									\n" \
+"		ushort k = 0;																																	\n" \
+"		double num = 0;																																	\n" \
+"		double den = 0;																																	\n" \
+"		ushort i_sfh = cl_sfh[global_index];																											\n" \
+"		ushort i_ir = cl_ir[global_index];																												\n" \
+"		ushort nfilt = ct_clconstants->nfilt;																											\n" \
+"		ushort nfilt_sfh = ct_clconstants->nfilt_sfh;																									\n" \
+"		ushort nfilt_mix = ct_clconstants->nfilt_mix;																									\n" \
+"		__global clmod_sfh_t *msfh = &mods_sfh[i_sfh];																									\n" \
+"		__global clmod_ir_t *mir = &mods_ir[i_ir];																										\n" \
+"																																						\n" \
+"		double flux_mod[NMAX];																															\n" \
+"		for (k = 0; k < nfilt_sfh - nfilt_mix; k++){																									\n" \
+"			flux_mod[k] = msfh->flux_sfh[k];																											\n" \
+"		}																																				\n" \
+"		for (k = nfilt_sfh - nfilt_mix; k < nfilt_sfh; k++){																							\n" \
+"			flux_mod[k] = msfh->flux_sfh[k] + mir->flux_ir[k];																							\n" \
+"		}																																				\n" \
+"		for (k = nfilt_sfh; k < nfilt; k++){																											\n" \
+"			flux_mod[k] = mir->flux_ir[k];																												\n" \
+"		}																																				\n" \
+"																																						\n" \
+"		// Compute the scaling factor a.						 																						\n" \
+"		for (k = 0; k<nfilt; k++){																														\n" \
+"			if (flux_obs[k]>0) {																														\n" \
+"				num = num + (flux_mod[k] * flux_obs[k] * w[k]);																							\n" \
+"				den = den + ((flux_mod[k] * flux_mod[k]) * w[k]);																						\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"																																						\n" \
+"		double a = num / den;																															\n" \
+"																																						\n" \
+"		// Compute chi^2 goodness of fit.						 																						\n" \
+"		double chi2 = 0;																																\n" \
+"		for (k = 0; k < nfilt_sfh; k++){																												\n" \
+"			if (flux_obs[k]>0) {																														\n" \
+"				chi2 = chi2 + ( (  (flux_obs[k] - (a * flux_mod[k]))*(flux_obs[k] - (a * flux_mod[k])) ) * w[k]);										\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		if (chi2 < 600){																																\n" \
+"			for (k = nfilt_sfh; k < nfilt; k++){																										\n" \
+"				if (flux_obs[k]>0) {																													\n" \
+"					chi2 = chi2 + ((pow(flux_obs[k] - (a * flux_mod[k]), 2)) * w[k]);																	\n" \
+"				}																																		\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"																																						\n" \
+"		// Calculate probability.							 																							\n" \
+"		double prob = exp(-0.5 * chi2);																													\n" \
+"																																						\n" \
+"		cl_chi2[global_index] = chi2;																													\n" \
+"		cl_prob[global_index] = prob;																													\n" \
+"																																						\n" \
+"		// Calculate marginal probability density functions. Instead			 																		\n" \
+"		// of writing prob values, we instead write the index of bin			 																		\n" \
+"		// for non-parallelized processing.						 																						\n" \
+"		int ibin;																																		\n" \
+"		ushort usbin;																																	\n" \
+"		double aux;																																		\n" \
+"																																						\n" \
+"		a = log10(a);																																	\n" \
+"																																						\n" \
+"		// Mstar									 																									\n" \
+"		aux = ((a - ct_clconstants->a_min) / (ct_clconstants->a_max - ct_clconstants->a_min)) * ct_clconstants->nbin_a;									\n" \
+"		ibin = (int)(aux);																																\n" \
+"		usbin = max(0, min(ibin, ct_clconstants->nbin_a - 1));																							\n" \
+"		ibin_pa[global_index] = usbin;																													\n" \
+"																																						\n" \
+"		// SFR_0.1Gyr									 																								\n" \
+"		aux = ((msfh->lssfr + a - ct_clconstants->sfr_min) / (ct_clconstants->sfr_max - ct_clconstants->sfr_min))* ct_clconstants->nbin_sfr;			\n" \
+"		ibin = (int)(aux);																																\n" \
+"		usbin = max(0, min(ibin, ct_clconstants->nbin_sfr - 1));																						\n" \
+"		ibin_psfr[global_index] = usbin;																												\n" \
+"																																						\n" \
+"		// Ldust									 																									\n" \
+"		aux = ((msfh->logldust + a - ct_clconstants->ld_min) / (ct_clconstants->ld_max - ct_clconstants->ld_min))* ct_clconstants->nbin_ld;				\n" \
+"		ibin = (int)(aux);																																\n" \
+"		usbin = max(0, min(ibin, ct_clconstants->nbin_ld - 1));																							\n" \
+"		ibin_pldust[global_index] = usbin;																												\n" \
+"																																						\n" \
+"		// Mdust									 																									\n" \
+"		aux = log10(mir->mdust * msfh->ldust * exp10(a));																								\n" \
+"		aux = ((aux - ct_clconstants->md_min) / (ct_clconstants->md_max - ct_clconstants->md_min)) * ct_clconstants->nbin_md;							\n" \
+"		ibin = (int)(aux);																																\n" \
+"		usbin = max(0, min(ibin, ct_clconstants->nbin_md - 1));																							\n" \
+"		ibin_pmdust[global_index] = usbin;																												\n" \
+"																																						\n" \
+"	} //if global_index < ci_idsSize											 																		\n" \
+"}																																						\n" \
+"																																						\n" \
+"__kernel void sumprob(int ci_idsSize, __global double *g_idata, __global double *g_odata, __local volatile double* sdata)								\n" \
+"{																																						\n" \
+"	// perform first level of reduction,																												\n" \
+"	// reading from global memory, writing to shared memory																								\n" \
+"	unsigned int tid = get_local_id(0);																													\n" \
+"	unsigned int i = get_group_id(0)*(get_local_size(0) * 2) + get_local_id(0);																			\n" \
+"	unsigned int gridSize = blockSize * 2 * get_num_groups(0);																							\n" \
+"	sdata[tid] = 0;																																		\n" \
+"																																						\n" \
+"	// we reduce multiple elements per thread.  The number is determined by the 																		\n" \
+"	// number of active thread blocks. More blocks will result																							\n" \
+"	// in a larger gridSize and therefore fewer elements per thread																						\n" \
+"	while (i < ci_idsSize)																																\n" \
+"	{																																					\n" \
+"		sdata[tid] += g_idata[i];																														\n" \
+"		// this is optimized away for powerOf2 sized arrays																								\n" \
+"		sdata[tid] += g_idata[i + blockSize];																											\n" \
+"		i += gridSize;																																	\n" \
+"	}																																					\n" \
+"																																						\n" \
+"	barrier(CLK_LOCAL_MEM_FENCE);																														\n" \
+"																																						\n" \
+"	// do reduction in shared mem																														\n" \
+"	if (blockSize >= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } barrier(CLK_LOCAL_MEM_FENCE); }											\n" \
+"	if (blockSize >= 256) { if (tid < 128) { sdata[tid] += sdata[tid + 128]; } barrier(CLK_LOCAL_MEM_FENCE); }											\n" \
+"	if (blockSize >= 128) { if (tid <  64) { sdata[tid] += sdata[tid + 64]; } barrier(CLK_LOCAL_MEM_FENCE); }											\n" \
+"																																						\n" \
+"	if (tid < 32)																																		\n" \
+"	{																																					\n" \
+"		if (blockSize >= 64) { sdata[tid] += sdata[tid + 32]; }																							\n" \
+"		if (blockSize >= 32) { sdata[tid] += sdata[tid + 16]; }																							\n" \
+"		if (blockSize >= 16) { sdata[tid] += sdata[tid + 8]; }																							\n" \
+"		if (blockSize >= 8) { sdata[tid] += sdata[tid + 4]; }																							\n" \
+"		if (blockSize >= 4) { sdata[tid] += sdata[tid + 2]; }																							\n" \
+"		if (blockSize >= 2) { sdata[tid] += sdata[tid + 1]; }																							\n" \
+"	}																																					\n" \
+"																																						\n" \
+"	// write result for this block to global mem 																										\n" \
+"	if (tid == 0) g_odata[get_group_id(0)] = sdata[0];																									\n" \
+"}																																						\n" \
+"																																						\n" \
+"__kernel void minchi(int ci_idsSize, __global const ushort* cl_sfh,																					\n" \
+"	__global const ushort* cl_ir, __global double *g_idata,																								\n" \
+"	__global double *g_odata, __global ushort *g_o_sfh, __global ushort *g_o_ir,																		\n" \
+"	__local volatile double* sdata, __local volatile ushort* s_sfh, __local volatile ushort* s_ir)														\n" \
+"{																																						\n" \
+"	//Need to added checks if chi2 is equal then use lowest sfh and ir																					\n" \
+"																																						\n" \
+"	// perform first level of reduction,																												\n" \
+"	// reading from global memory, writing to shared memory																								\n" \
+"	unsigned int tid = get_local_id(0);																													\n" \
+"	unsigned int i = get_group_id(0)*(get_local_size(0) * 2) + get_local_id(0);																			\n" \
+"	unsigned int gridSize = blockSize * 2 * get_num_groups(0);																							\n" \
+"	sdata[tid] = INFINITY;																																\n" \
+"																																						\n" \
+"	// we reduce multiple elements per thread.  The number is determined by the 																		\n" \
+"	// number of active thread blocks. More blocks will result																							\n" \
+"	// in a larger gridSize and therefore fewer elements per thread																						\n" \
+"	while (i < ci_idsSize)																																\n" \
+"	{																																					\n" \
+"		//this is optimized away for powerOf2 sized arrays																								\n" \
+"		if (g_idata[i] < sdata[tid]) {																													\n" \
+"			sdata[tid] = g_idata[i]; s_sfh[tid] = cl_sfh[i]; s_ir[tid] = cl_ir[i];																		\n" \
+"		}																																				\n" \
+"		if (g_idata[i] == sdata[tid] && (cl_sfh[i] * NMOD) + cl_ir[i] < (s_sfh[tid] * NMOD) + s_ir[tid]) {												\n" \
+"			s_sfh[tid] = cl_sfh[i]; s_ir[tid] = cl_ir[i];																								\n" \
+"		}																																				\n" \
+"		if (g_idata[i + blockSize] < sdata[tid]) {																										\n" \
+"			sdata[tid] = g_idata[i + blockSize]; s_sfh[tid] = cl_sfh[i + blockSize]; s_ir[tid] = cl_ir[i + blockSize];									\n" \
+"		}																																				\n" \
+"		if (g_idata[i + blockSize] == sdata[tid] && (cl_sfh[i + blockSize] * NMOD) + cl_ir[i + blockSize] < (s_sfh[tid] * NMOD) + s_ir[tid]) {			\n" \
+"			s_sfh[tid] = cl_sfh[i + blockSize]; s_ir[tid] = cl_ir[i + blockSize];																		\n" \
+"		}																																				\n" \
+"		i += gridSize;																																	\n" \
+"	}																																					\n" \
+"																																						\n" \
+"	barrier(CLK_LOCAL_MEM_FENCE);																														\n" \
+"																																						\n" \
+"	//do reduction in shared mem																														\n" \
+"	if (blockSize >= 512) {																																\n" \
+"		if (tid < 256) {																																\n" \
+"			if (sdata[tid + 256] < sdata[tid]) {																										\n" \
+"				sdata[tid] = sdata[tid + 256]; s_sfh[tid] = s_sfh[tid + 256]; s_ir[tid] = s_ir[tid + 256];												\n" \
+"			}																																			\n" \
+"			if (sdata[tid + 256] == sdata[tid] && (s_sfh[tid + 256] * NMOD) + s_ir[tid + 256] < (s_sfh[tid] * NMOD) + s_ir[tid]) {						\n" \
+"				s_sfh[tid] = s_sfh[tid + 256]; s_ir[tid] = s_ir[tid + 256];																				\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		barrier(CLK_LOCAL_MEM_FENCE);																													\n" \
+"	}																																					\n" \
+"	if (blockSize >= 256) {																																\n" \
+"		if (tid < 128) {																																\n" \
+"			if (sdata[tid + 128] < sdata[tid]) {																										\n" \
+"				sdata[tid] = sdata[tid + 128]; s_sfh[tid] = s_sfh[tid + 128]; s_ir[tid] = s_ir[tid + 128];												\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 128] == sdata[tid] && (s_sfh[tid + 128] * NMOD) + s_ir[tid + 128] < (s_sfh[tid] * NMOD) + s_ir[tid]) {					\n" \
+"				s_sfh[tid] = s_sfh[tid + 128]; s_ir[tid] = s_ir[tid + 128];																				\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		barrier(CLK_LOCAL_MEM_FENCE);																													\n" \
+"	}																																					\n" \
+"	if (blockSize >= 128) {																																\n" \
+"		if (tid < 64) {																																	\n" \
+"			if (sdata[tid + 64] < sdata[tid]) {																											\n" \
+"				sdata[tid] = sdata[tid + 64]; s_sfh[tid] = s_sfh[tid + 64]; s_ir[tid] = s_ir[tid + 64];													\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 64] == sdata[tid] && (s_sfh[tid + 64] * NMOD) + s_ir[tid + 64] < (s_sfh[tid] * NMOD) + s_ir[tid]) {					\n" \
+"				s_sfh[tid] = s_sfh[tid + 64]; s_ir[tid] = s_ir[tid + 64];																				\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		barrier(CLK_LOCAL_MEM_FENCE);																													\n" \
+"	}																																					\n" \
+"																																						\n" \
+"	if (tid < 32)																																		\n" \
+"	{																																					\n" \
+"		if (blockSize >= 64) {																															\n" \
+"			if (sdata[tid + 32] < sdata[tid]) {																											\n" \
+"				sdata[tid] = sdata[tid + 32]; s_sfh[tid] = s_sfh[tid + 32]; s_ir[tid] = s_ir[tid + 32];													\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 32] == sdata[tid] && (s_sfh[tid + 32] * NMOD) + s_ir[tid + 32] < (s_sfh[tid] * NMOD) + s_ir[tid]) {					\n" \
+"				s_sfh[tid] = s_sfh[tid + 32]; s_ir[tid] = s_ir[tid + 32];																				\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		if (blockSize >= 32) {																															\n" \
+"			if (sdata[tid + 16] < sdata[tid]) {																											\n" \
+"				sdata[tid] = sdata[tid + 16]; s_sfh[tid] = s_sfh[tid + 16]; s_ir[tid] = s_ir[tid + 16];													\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 16] == sdata[tid] && (s_sfh[tid + 16] * NMOD) + s_ir[tid + 16] < (s_sfh[tid] * NMOD) + s_ir[tid]) {					\n" \
+"				s_sfh[tid] = s_sfh[tid + 16]; s_ir[tid] = s_ir[tid + 16];																				\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		if (blockSize >= 16) {																															\n" \
+"			if (sdata[tid + 8] < sdata[tid]) {																											\n" \
+"				sdata[tid] = sdata[tid + 8]; s_sfh[tid] = s_sfh[tid + 8]; s_ir[tid] = s_ir[tid + 8];													\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 8] == sdata[tid] && (s_sfh[tid + 8] * NMOD) + s_ir[tid + 8] < (s_sfh[tid] * NMOD) + s_ir[tid]) {						\n" \
+"				s_sfh[tid] = s_sfh[tid + 8]; s_ir[tid] = s_ir[tid + 8];																					\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		if (blockSize >= 8) {																															\n" \
+"			if (sdata[tid + 4] < sdata[tid]) {																											\n" \
+"				sdata[tid] = sdata[tid + 4]; s_sfh[tid] = s_sfh[tid + 4]; s_ir[tid] = s_ir[tid + 4];													\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 4] == sdata[tid] && (s_sfh[tid + 4] * NMOD) + s_ir[tid + 4] < (s_sfh[tid] * NMOD) + s_ir[tid]) {						\n" \
+"				s_sfh[tid] = s_sfh[tid + 4]; s_ir[tid] = s_ir[tid + 4];																					\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		if (blockSize >= 4) {																															\n" \
+"			if (sdata[tid + 2] < sdata[tid]) {																											\n" \
+"				sdata[tid] = sdata[tid + 2]; s_sfh[tid] = s_sfh[tid + 2]; s_ir[tid] = s_ir[tid + 2];													\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 2] == sdata[tid] && (s_sfh[tid + 2] * NMOD) + s_ir[tid + 2] < (s_sfh[tid] * NMOD) + s_ir[tid]) {						\n" \
+"				s_sfh[tid] = s_sfh[tid + 2]; s_ir[tid] = s_ir[tid + 2];																					\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"		if (blockSize >= 2) {																															\n" \
+"			if (sdata[tid + 1] < sdata[tid]) {																											\n" \
+"				sdata[tid] = sdata[tid + 1]; s_sfh[tid] = s_sfh[tid + 1]; s_ir[tid] = s_ir[tid + 1];													\n" \
+"			}																																			\n" \
+"			else if (sdata[tid + 1] == sdata[tid] && (s_sfh[tid + 1] * NMOD) + s_ir[tid + 1] < (s_sfh[tid] * NMOD) + s_ir[tid]) {						\n" \
+"				s_sfh[tid] = s_sfh[tid + 1]; s_ir[tid] = s_ir[tid + 1];																					\n" \
+"			}																																			\n" \
+"		}																																				\n" \
+"	}																																					\n" \
+"																																						\n" \
+"	// write result for this block to global mem 																										\n" \
+"	if (tid == 0) {																																		\n" \
+"		g_odata[get_group_id(0)] = sdata[0];																											\n" \
+"		g_o_sfh[get_group_id(0)] = s_sfh[0];																											\n" \
+"		g_o_ir[get_group_id(0)] = s_ir[0];																												\n" \
+"	}																																					\n" \
+"}																																						\n" \
+"																																						\n" \
+"__kernel void check_df(const int start_sfh,																											\n" \
+"	__constant clconstants_t* ct_clconstants,																											\n" \
+"	__global const double* fmu_sfh,																														\n" \
+"	__global const double* fmu_ir,																														\n" \
+"	__global unsigned int* withindf																														\n" \
+"	)																																					\n" \
+"{																																						\n" \
+"	// Get kernel thread id for matching with array indexes.																							\n" \
+"	int i_idx = get_global_id(0) * 32;																													\n" \
+"	int i_sfhdiff = i_idx / NMOD;																														\n" \
+"	int i_ir = i_idx - (i_sfhdiff * NMOD);																												\n" \
+"	int i_sfh = start_sfh + i_sfhdiff;																													\n" \
+"	int k;																																				\n" \
+"																																						\n" \
+"	unsigned int ui_df = 0; //All False																													\n" \
+"	unsigned int ui_pow = 1;																															\n" \
+"																																						\n" \
+"	if (i_sfh < ct_clconstants->n_sfh && i_ir < ct_clconstants->n_ir){																					\n" \
+"		for (k = 0; k < 32 && i_ir < ct_clconstants->n_ir; k++) {																						\n" \
+"			if (fabs(fmu_sfh[i_sfh] - fmu_ir[i_ir]) <= ct_clconstants->df) {																			\n" \
+"				ui_df = ui_df | ui_pow;																													\n" \
+"			}																																			\n" \
+"			i_ir++;																																		\n" \
+"			ui_pow = ui_pow << 1;																														\n" \
+"		}																																				\n" \
+"	}																																					\n" \
+"																																						\n" \
+"	withindf[get_global_id(0)] = ui_df;																													\n" \
+"																																						\n" \
+"}																																						\n" \
+"																																						\n" \
+"__kernel void sumidtorange(																															\n" \
+"	const int ci_idsSize,																																\n" \
+"	const int ci_groupSize,																																\n" \
+"	const int ci_theadSize,																																\n" \
+"	const int range_start,																																\n" \
+"	const int range_width,																																\n" \
+"	__global ushort* ibin_id,																															\n" \
+"	__global double* cl_prob,																															\n" \
+"	__global double *g_odata,																															\n" \
+"	__local ushort* sdataid,																															\n" \
+"	__local double* sdataprob)																															\n" \
+"{																																						\n" \
+"	//scratch is (clmax/get_num_groups)*double  262144 *2b 524288/49152=11  /14 37450  multiple of gpu_compute<48K										\n" \
+"	//g_odata is range*get_num_groups*double    3008*14 42K 200K total 50008*14 700K vs balanced square 14k+14k vs cpu reduce 262k f-op 1.4M f-op total	\n" \
+"	// perform first level of reduction,        //cl_model 262144*24*8=6M //42k*4 + bal = 250K GPU/1024, vs 1.4M CPU/4  244 vs 393K *1611				\n" \
+"	// reading from global memory, writing to shared memory //withindf 312M //42k*16 672K no sfh/ir														\n" \
+"																																						\n" \
+"	//ci_groupSize ceil(256144 clmax/14 groups)=18296																									\n" \
+"	//ci_theadSize ceil(18296/256localthreads)=72																										\n" \
+"	unsigned int i_global_groupoffset = get_group_id(0)*ci_groupSize;																					\n" \
+"	unsigned int i_local_threadoffset = ci_theadSize*get_local_id(0);																					\n" \
+"	unsigned int i_global_threadoffset = i_global_groupoffset + i_local_threadoffset;																	\n" \
+"																																						\n" \
+"	//loop ci_groupSize of Id's with each thread handling ci_theadSize																					\n" \
+"	for (int iload = 0; iload < ci_theadSize; iload++)																									\n" \
+"	{																																					\n" \
+"		int i_local_id = i_local_threadoffset + iload;																									\n" \
+"		int i_global_id = i_global_threadoffset + iload;																								\n" \
+"																																						\n" \
+"		if (i_local_id < ci_groupSize && i_global_id < ci_idsSize) {																					\n" \
+"			sdataid[i_local_id] = ibin_id[i_global_id];																									\n" \
+"			sdataprob[i_local_id] = cl_prob[i_global_id];																								\n" \
+"		} else {																																		\n" \
+"			sdataid[i_local_id] = 65535;																												\n" \
+"			sdataprob[i_local_id] = 0;																													\n" \
+"		}																																				\n" \
+"	}																																					\n" \
+"	barrier(CLK_LOCAL_MEM_FENCE);																														\n" \
+"																																						\n" \
+"	//ii_findid. 2304/256=9 or 50008/256=195 (unbalanced block, balanced=4)																				\n" \
+"	double sum_search[9];																																\n" \
+"	for (int ii_findid = 0; ii_findid < 10; ii_findid++) {																								\n" \
+"		sum_search[ii_findid] = 0;																														\n" \
+"	}																																					\n" \
+"	ushort i_local_searchoffset = 9 * get_local_id(0);																									\n" \
+"	ushort i_local_searchoffsetend = min(i_local_searchoffset + 9, range_width);																		\n" \
+"	//const ushort us_searchmax = 9;																													\n" \
+"	//const ushort us_searchmin = 0;																													\n" \
+"	//ushort i_local_searchoffsetminus1 = i_local_searchoffset - 1;																						\n" \
+"																																						\n" \
+"	//ii_chklocal = 4574/8=571																															\n" \
+"	//ushort8 chkid = vload8(0, sdataid);																												\n" \
+"	//double8 prob = vload8(0, sdataprob);																												\n" \
+"	//ushort8 chkidoffset = chkid - i_local_searchoffset;																								\n" \
+"																																						\n" \
+"	for (int ii_chklocal = 0; ii_chklocal < ci_groupSize / 8; ii_chklocal++) {																			\n" \
+"		ushort8 chkid = vload8(ii_chklocal, sdataid);																									\n" \
+"		double8 prob = vload8(ii_chklocal, sdataprob);																									\n" \
+"		//ushort8 chkidoffset = min(us_searchmin, max(chkid - i_local_searchoffsetminus1, us_searchmax)); 												\n" \
+"		//sum_search[chkidoffset.s0] += prob.s0;																										\n" \
+"		//sum_search[chkidoffset.s1] += prob.s1;																										\n" \
+"																																						\n" \
+"		ushort8 chkidoffset = chkid - i_local_searchoffset;																								\n" \
+"		if (chkidoffset.s0 >= 0 && chkidoffset.s0 < 9) sum_search[chkidoffset.s0] += prob.s0;															\n" \
+"		if (chkidoffset.s1 >= 0 && chkidoffset.s1 < 9) sum_search[chkidoffset.s1] += prob.s1;															\n" \
+"		if (chkidoffset.s2 >= 0 && chkidoffset.s2 < 9) sum_search[chkidoffset.s2] += prob.s2;															\n" \
+"		if (chkidoffset.s3 >= 0 && chkidoffset.s3 < 9) sum_search[chkidoffset.s3] += prob.s3;															\n" \
+"		if (chkidoffset.s4 >= 0 && chkidoffset.s4 < 9) sum_search[chkidoffset.s4] += prob.s4;															\n" \
+"		if (chkidoffset.s5 >= 0 && chkidoffset.s5 < 9) sum_search[chkidoffset.s5] += prob.s5;															\n" \
+"		if (chkidoffset.s6 >= 0 && chkidoffset.s6 < 9) sum_search[chkidoffset.s6] += prob.s6;															\n" \
+"		if (chkidoffset.s7 >= 0 && chkidoffset.s7 < 9) sum_search[chkidoffset.s7] += prob.s7;															\n" \
+"	} //ii_searchhistogram																																\n" \
+"																																						\n" \
+"	for (int ii_findid = 0; ii_findid < (i_local_searchoffsetend - i_local_searchoffset); ii_findid++) {												\n" \
+"		g_odata[get_group_id(0)*range_width + i_local_searchoffset + ii_findid] = sum_search[ii_findid];												\n" \
+"	}																																					\n" \
+"}																																						\n" \
+"																																						\n" \
+"__kernel void sumrangetoarray(																															\n" \
+"	const int range_start,																																\n" \
+"	const int range_width,																																\n" \
+"	const int num_groups,																																\n" \
+"	__global double *g_idata,																															\n" \
+"	__global double *g_odata)																															\n" \
+"{																																						\n" \
+"	unsigned int tid = get_global_id(0); //example histo start 0, width 3008																			\n" \
+"										 //example sfh start 1024, width 1024  IR start 2048 width 1024													\n" \
+"	if (tid < range_width) {			// if we can balance blocks otherwise sfh 19 w 21, IR 0 w 50008													\n" \
+"		double sum_search = 0;																															\n" \
+"		for (int i = 0; i < num_groups; i++) {																											\n" \
+"			sum_search += g_idata[i*range_width + tid];																									\n" \
+"		}																																				\n" \
+"		if (sum_search != 0) { //Save to Global Array																									\n" \
+"			g_odata[range_start+tid] += sum_search;																										\n" \
+"		}																																				\n" \
+"		//tid += get_num_groups(0)*get_local_size(0);																									\n" \
+"	}																																					\n" \
+"}																																						\n" \
 "\n";
 #endif
 // OpenCL implementation specific.
@@ -1363,7 +1447,7 @@ int main(int argc, char *argv[]){
 		queue.enqueueWriteBuffer(d_fmu_sfh, CL_TRUE, 0, NMOD*sizeof(double), fmu_sfh);
 		queue.enqueueWriteBuffer(d_fmu_ir, CL_TRUE, 0, NMOD*sizeof(double), fmu_ir);
 
-		queue.enqueueWriteBuffer(d_pa, CL_TRUE, 0, NBINMAX1*sizeof(double), pa);
+		//queue.enqueueWriteBuffer(d_pa, CL_TRUE, 0, NBINMAX1*sizeof(double), pa);
 
 		// Prepare kernel program.
 		cl::Kernel kernel_checkdf(fit_program, "check_df");
@@ -1429,41 +1513,41 @@ int main(int argc, char *argv[]){
 		cl::NDRange globalSize_reduce(CLBLOCKSIZE_RED*gpu_compute);
 		
 		// Prepare kernel program.
-		static double cl_range[7 * 8 * NBINMAX1];
-		cl::Buffer d_cl_range = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, gpu_compute * 8 * NBINMAX1*sizeof(double), cl_range, NULL);
+		//static double cl_range[7 * 8 * NBINMAX1];
+		//cl::Buffer d_cl_range = cl::Buffer(context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, gpu_compute * 8 * NBINMAX1*sizeof(double), cl_range, NULL);
 
-		cl::Kernel kernel_sumidtorange(fit_program, "sumidtorange");
-		//argument 0 will be i_m - number of models to process
-		//argument 1 const int ci_groupSize,
-		// argument 2	const int ci_theadSize,
-		//argument 3 will be  - range start
-		//argument 4 will be  - range width
-		//argument 5 will be unsigned short array of ids.
-		kernel_sumidtorange.setArg(6, d_cl_prob);
-		kernel_sumidtorange.setArg(7, d_cl_range); //Temporary Global to send to sumRangetoarray
-		//argument 8 is local scratch
-		//argument 9 is local scratch
+		//cl::Kernel kernel_sumidtorange(fit_program, "sumidtorange");
+		////argument 0 will be i_m - number of models to process
+		////argument 1 const int ci_groupSize,
+		//// argument 2	const int ci_theadSize,
+		////argument 3 will be  - range start
+		////argument 4 will be  - range width
+		////argument 5 will be unsigned short array of ids.
+		//kernel_sumidtorange.setArg(6, d_cl_prob);
+		//kernel_sumidtorange.setArg(7, d_cl_range); //Temporary Global to send to sumRangetoarray
+		////argument 8 is local scratch
+		////argument 9 is local scratch
 
-		// Prepare kernel program.
-		cl::Kernel kernel_sumrangetoarray(fit_program, "sumrangetoarray");
-		//argument 0 will be  - range start
-		//argument 1 will be  - range width
-		//argument 2 will be - num groups /
-		kernel_sumrangetoarray.setArg(2, gpu_compute * 8);
-		kernel_sumrangetoarray.setArg(3, d_cl_range); //Temporary Global to send to sumRangetoarray
-		//argument 4 will be - Array to update. d_sfh_hist d_ir_hist d_pa d_psfr d_pldust d_pmdust
-		//kernel_sumrangetoarray.setArg(4, d_sfh_hist);
+		//// Prepare kernel program.
+		//cl::Kernel kernel_sumrangetoarray(fit_program, "sumrangetoarray");
+		////argument 0 will be  - range start
+		////argument 1 will be  - range width
+		////argument 2 will be - num groups /
+		//kernel_sumrangetoarray.setArg(2, gpu_compute * 8);
+		//kernel_sumrangetoarray.setArg(3, d_cl_range); //Temporary Global to send to sumRangetoarray
+		////argument 4 will be - Array to update. d_sfh_hist d_ir_hist d_pa d_psfr d_pldust d_pmdust
+		////kernel_sumrangetoarray.setArg(4, d_sfh_hist);
 
-		// Set global workload size.
-		cl::NDRange localSize_range(CLLOCAL_RANGE);
-		cl::NDRange globalSize_range(CLLOCAL_RANGE*gpu_compute * 8);
+		//// Set global workload size.
+		//cl::NDRange localSize_range(CLLOCAL_RANGE);
+		//cl::NDRange globalSize_range(CLLOCAL_RANGE*gpu_compute * 8);
 
-		std::cout << " Range LocalSize " << CLLOCAL_RANGE << " Global Size " << CLLOCAL_RANGE*gpu_compute * 8 << endl;
+		//std::cout << " Range LocalSize " << CLLOCAL_RANGE << " Global Size " << CLLOCAL_RANGE*gpu_compute * 8 << endl;
 
-		cl::NDRange localSize_range2(CLBLOCKSIZE_RED);
-		cl::NDRange globalSize_range2(CLBLOCKSIZE_RED*gpu_compute*2);
+		//cl::NDRange localSize_range2(CLBLOCKSIZE_RED);
+		//cl::NDRange globalSize_range2(CLBLOCKSIZE_RED*gpu_compute*2);
 
-		std::cout << " Range2 LocalSize " << CLBLOCKSIZE_RED << " Global Size " << CLBLOCKSIZE_RED*gpu_compute*2 << endl;
+		//std::cout << " Range2 LocalSize " << CLBLOCKSIZE_RED << " Global Size " << CLBLOCKSIZE_RED*gpu_compute*2 << endl;
 
 		// Event that will be used for getting response.
 		cl::Event event;
@@ -1675,46 +1759,46 @@ int main(int argc, char *argv[]){
 			}
 
 //Reduce Histogram
-			//Part1 Reduce pa histogram
-			kernel_sumidtorange.setArg(0, i_m);
-			int cl_groupsize = ceil(i_m / (double)(gpu_compute * 8)); //4574
-			int cl_threadsize = ceil(cl_groupsize / (double)CLLOCAL_RANGE);	  //4574/256=18 *256=4608 *10b<=48k Localsize
-			kernel_sumidtorange.setArg(1, cl_groupsize);
-			kernel_sumidtorange.setArg(2, cl_threadsize);
-			kernel_sumidtorange.setArg(3, 0);
-			kernel_sumidtorange.setArg(4, NBINMAX1);
-			kernel_sumidtorange.setArg(5, d_ibin_pa);
-			kernel_sumidtorange.setArg(8, cl_threadsize*CLLOCAL_RANGE * sizeof(unsigned short), NULL); //Local Scratch ushort
-			kernel_sumidtorange.setArg(9, cl_threadsize*CLLOCAL_RANGE * sizeof(double), NULL); //Local Scratch double
+			////Part1 Reduce pa histogram
+			//kernel_sumidtorange.setArg(0, i_m);
+			//int cl_groupsize = ceil(i_m / (double)(gpu_compute * 8)); //4574
+			//int cl_threadsize = ceil(cl_groupsize / (double)CLLOCAL_RANGE);	  //4574/256=18 *256=4608 *10b<=48k Localsize
+			//kernel_sumidtorange.setArg(1, cl_groupsize);
+			//kernel_sumidtorange.setArg(2, cl_threadsize);
+			//kernel_sumidtorange.setArg(3, 0);
+			//kernel_sumidtorange.setArg(4, NBINMAX1);
+			//kernel_sumidtorange.setArg(5, d_ibin_pa);
+			//kernel_sumidtorange.setArg(8, cl_threadsize*CLLOCAL_RANGE * sizeof(unsigned short), NULL); //Local Scratch ushort
+			//kernel_sumidtorange.setArg(9, cl_threadsize*CLLOCAL_RANGE * sizeof(double), NULL); //Local Scratch double
 
-			queue.enqueueNDRangeKernel(kernel_sumidtorange, cl::NullRange, globalSize_range, localSize_range,
-				NULL, &event);
+			//queue.enqueueNDRangeKernel(kernel_sumidtorange, cl::NullRange, globalSize_range, localSize_range,
+			//	NULL, &event);
 
-			event.wait();
+			//event.wait();
 
-			start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
-			end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
-			cltimehisto1 = cltimehisto1 + (end - start);
+			//start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+			//end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
+			//cltimehisto1 = cltimehisto1 + (end - start);
 
-			//Part2 Reduce pa histogram
-			kernel_sumrangetoarray.setArg(0, 0);
-			kernel_sumrangetoarray.setArg(1, NBINMAX1);
-			kernel_sumrangetoarray.setArg(4, d_pa);
+			////Part2 Reduce pa histogram
+			//kernel_sumrangetoarray.setArg(0, 0);
+			//kernel_sumrangetoarray.setArg(1, NBINMAX1);
+			//kernel_sumrangetoarray.setArg(4, d_pa);
 
-			queue.enqueueNDRangeKernel(kernel_sumrangetoarray, cl::NullRange, globalSize_range2, localSize_range2,
-				NULL, &event);
+			//queue.enqueueNDRangeKernel(kernel_sumrangetoarray, cl::NullRange, globalSize_range2, localSize_range2,
+			//	NULL, &event);
 
-			event.wait();
+			//event.wait();
 
-			start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
-			end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
-			cltimehisto2 = cltimehisto2 + (end - start);
+			//start = event.getProfilingInfo<CL_PROFILING_COMMAND_START>();
+			//end = event.getProfilingInfo<CL_PROFILING_COMMAND_END>();
+			//cltimehisto2 = cltimehisto2 + (end - start);
 
 			//Manual Reduce HistoGram
 			// Read processed model data back from device memory.
 			clckstart = std::clock();
 			queue.enqueueReadBuffer(d_cl_prob, CL_TRUE, 0, i_m*sizeof(double), cl_prob);
-			//queue.enqueueReadBuffer(d_ibin_pa, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pa);
+			queue.enqueueReadBuffer(d_ibin_pa, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pa);
 			queue.enqueueReadBuffer(d_ibin_psfr, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_psfr);
 			queue.enqueueReadBuffer(d_ibin_pldust, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pldust);
 			queue.enqueueReadBuffer(d_ibin_pmdust, CL_TRUE, 0, i_m*sizeof(unsigned short), ibin_pmdust);
@@ -1725,7 +1809,7 @@ int main(int argc, char *argv[]){
 			for (i = 0; i<i_m; i++){
 				sfh_hist[cl_sfh[i]] += cl_prob[i];
 				ir_hist[cl_ir[i]] += cl_prob[i];
-				//pa[ibin_pa[i]] += cl_prob[i];
+				pa[ibin_pa[i]] += cl_prob[i];
 				psfr[ibin_psfr[i]] += cl_prob[i];
 				pldust[ibin_pldust[i]] += cl_prob[i];
 				pmd[ibin_pmdust[i]] += cl_prob[i];
@@ -1749,7 +1833,7 @@ int main(int argc, char *argv[]){
 		std::cout << "Time for model array processing        " << (arrtime1 / (double)CLOCKS_PER_SEC) / i_kernel << " * " << i_kernel << " = " << (arrtime1 / (double)CLOCKS_PER_SEC) << endl;
 		std::cout << "Time for pa rangeid to execute         " << cltimehisto1 / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltimehisto1 * 1.e-9 << endl;
 		std::cout << "Time for pa rangesum kernel to execute " << cltimehisto2 / i_kernel * 1.e-9 << " * " << i_kernel << " = " << cltimehisto2 * 1.e-9 << endl;
-		queue.enqueueReadBuffer(d_pa, CL_TRUE, 0, NBINMAX1*sizeof(double), pa);
+		//queue.enqueueReadBuffer(d_pa, CL_TRUE, 0, NBINMAX1*sizeof(double), pa);
 	}
 	catch (cl::Error error){
 		//CL_INVALID_ARG_INDEX

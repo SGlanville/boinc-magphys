@@ -99,7 +99,7 @@ __kernel void fit(const int ci_idsSize,
 		for (k = 0; k<nfilt; k++){
 			if (flux_obs[k]>0) {
 				num = num + (flux_mod[k] * flux_obs[k] * w[k]);
-				den = den + (pow(flux_mod[k], 2) * w[k]);
+				den = den + ((flux_mod[k] * flux_mod[k]) * w[k]);
 			}
 		}
 
@@ -109,7 +109,7 @@ __kernel void fit(const int ci_idsSize,
 		double chi2 = 0;
 		for (k = 0; k < nfilt_sfh; k++){
 			if (flux_obs[k]>0) {
-				chi2 = chi2 + ((pow(flux_obs[k] - (a * flux_mod[k]), 2)) * w[k]);
+				chi2 = chi2 + ( (  (flux_obs[k] - (a * flux_mod[k]))*(flux_obs[k] - (a * flux_mod[k])) ) * w[k]);
 			}
 		}
 		if (chi2 < 600){
@@ -154,7 +154,7 @@ __kernel void fit(const int ci_idsSize,
 		ibin_pldust[global_index] = usbin;
 
 		// Mdust									 																							
-		aux = log10(mir->mdust * msfh->ldust * pow(10.0, a));
+		aux = log10(mir->mdust * msfh->ldust * exp10(a));
 		aux = ((aux - ct_clconstants->md_min) / (ct_clconstants->md_max - ct_clconstants->md_min)) * ct_clconstants->nbin_md;
 		ibin = (int)(aux);
 		usbin = max(0, min(ibin, ct_clconstants->nbin_md - 1));
@@ -407,14 +407,15 @@ __kernel void sumidtorange(
 	barrier(CLK_LOCAL_MEM_FENCE);
 
 	//ii_findid. 2304/256=9 or 50008/256=195 (unbalanced block, balanced=4)
-	double sum_search[11]; //extra item at begining and end to store unneed values.
+	double sum_search[9];
 	for (int ii_findid = 0; ii_findid < 10; ii_findid++) {
 		sum_search[ii_findid] = 0;
 	}
 	ushort i_local_searchoffset = 9 * get_local_id(0);
 	ushort i_local_searchoffsetend = min(i_local_searchoffset + 9, range_width);
-	const ushort us_searchmax = 10;
-	const ushort us_searchmin = 0;
+	//const ushort us_searchmax = 9;
+	//const ushort us_searchmin = 0;
+	//ushort i_local_searchoffsetminus1 = i_local_searchoffset - 1;
 
 	//ii_chklocal = 4574/8=571
 	//ushort8 chkid = vload8(0, sdataid);
@@ -424,28 +425,23 @@ __kernel void sumidtorange(
 	for (int ii_chklocal = 0; ii_chklocal < ci_groupSize / 8; ii_chklocal++) {
 		ushort8 chkid = vload8(ii_chklocal, sdataid);
 		double8 prob = vload8(ii_chklocal, sdataprob);
-		//ushort8 chkidoffset = chkid - i_local_searchoffset;
-		ushort8 chkidoffset = min( us_searchmin, max(chkid - i_local_searchoffset, us_searchmax)); //Zeroth and 10th item is summed but not saved to avoid if's
-		sum_search[chkidoffset.s0] += prob.s0;
-		sum_search[chkidoffset.s1] += prob.s1;
-		sum_search[chkidoffset.s2] += prob.s2;
-		sum_search[chkidoffset.s3] += prob.s3;
-		sum_search[chkidoffset.s4] += prob.s4;
-		sum_search[chkidoffset.s5] += prob.s5;
-		sum_search[chkidoffset.s6] += prob.s6;
-		sum_search[chkidoffset.s7] += prob.s7;
-		//if (chkidoffset.s0 >= 0 && chkidoffset.s0 < 9) sum_search[chkidoffset.s0] += prob.s0;
-		//if (chkidoffset.s1 >= 0 && chkidoffset.s1 < 9) sum_search[chkidoffset.s1] += prob.s1;
-		//if (chkidoffset.s2 >= 0 && chkidoffset.s2 < 9) sum_search[chkidoffset.s2] += prob.s2;
-		//if (chkidoffset.s3 >= 0 && chkidoffset.s3 < 9) sum_search[chkidoffset.s3] += prob.s3;
-		//if (chkidoffset.s4 >= 0 && chkidoffset.s4 < 9) sum_search[chkidoffset.s4] += prob.s4;
-		//if (chkidoffset.s5 >= 0 && chkidoffset.s5 < 9) sum_search[chkidoffset.s5] += prob.s5;
-		//if (chkidoffset.s6 >= 0 && chkidoffset.s6 < 9) sum_search[chkidoffset.s6] += prob.s6;
-		//if (chkidoffset.s7 >= 0 && chkidoffset.s7 < 9) sum_search[chkidoffset.s7] += prob.s7;
+		//ushort8 chkidoffset = min(us_searchmin, max(chkid - i_local_searchoffsetminus1, us_searchmax)); //Zeroth and 10th item is summed but not saved to avoid if's
+		//sum_search[chkidoffset.s0] += prob.s0;
+		//sum_search[chkidoffset.s1] += prob.s1;
+
+		ushort8 chkidoffset = chkid - i_local_searchoffset;
+		if (chkidoffset.s0 >= 0 && chkidoffset.s0 < 9) sum_search[chkidoffset.s0] += prob.s0;
+		if (chkidoffset.s1 >= 0 && chkidoffset.s1 < 9) sum_search[chkidoffset.s1] += prob.s1;
+		if (chkidoffset.s2 >= 0 && chkidoffset.s2 < 9) sum_search[chkidoffset.s2] += prob.s2;
+		if (chkidoffset.s3 >= 0 && chkidoffset.s3 < 9) sum_search[chkidoffset.s3] += prob.s3;
+		if (chkidoffset.s4 >= 0 && chkidoffset.s4 < 9) sum_search[chkidoffset.s4] += prob.s4;
+		if (chkidoffset.s5 >= 0 && chkidoffset.s5 < 9) sum_search[chkidoffset.s5] += prob.s5;
+		if (chkidoffset.s6 >= 0 && chkidoffset.s6 < 9) sum_search[chkidoffset.s6] += prob.s6;
+		if (chkidoffset.s7 >= 0 && chkidoffset.s7 < 9) sum_search[chkidoffset.s7] += prob.s7;
 	} //ii_searchhistogram
 
 	for (int ii_findid = 0; ii_findid < (i_local_searchoffsetend - i_local_searchoffset); ii_findid++) {
-		g_odata[get_group_id(0)*range_width + i_local_searchoffset + ii_findid] = sum_search[ii_findid+1];
+		g_odata[get_group_id(0)*range_width + i_local_searchoffset + ii_findid] = sum_search[ii_findid];
 	}
 }
 
