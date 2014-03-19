@@ -126,6 +126,7 @@ c theSkyNet
       integer nbin2_fmu,nbin2_mu,nbin2_tv,nbin2_a,nbin_fmu_ism
       integer nbin2_fmu_ism,nbin_md,nbin2_md,nbin_ssfr,nbin2_ssfr
       integer nbin2_tbg1,nbin2_tbg2,nbin2_xi,nbin2_sfr,nbin2_ld
+      real*8 sfh_hist(nmod),ir_hist(nmod)
       real*8 fmu_hist(nbinmax1),psfh(nbinmax1),pism(nbinmax1)
       real*8 pir(nbinmax1),ptbg1(nbinmax1)
       real*8 mu_hist(nbinmax1),pmu(nbinmax1),ptbg2(nbinmax1)
@@ -515,9 +516,12 @@ c     Initialize variables:
          do k=1,nfilt
             flux_mod(k)=0.
          enddo
-
+	 do i=1,nmod
+	    sfh_hist(i)=0.
+	    ir_hist(i)=0.
+	 enddo
 c theSkyNet do i=1,1500
-         do i=1,3000
+         do i=1,nbinmax1
             psfh(i)=0.
             pir(i)=0.
             pmu(i)=0.
@@ -575,45 +579,57 @@ c     Compute histogram indexes for each parameter value
 c     [makes code faster -- implemented by the Nottingham people]
          do i_sfh=1, n_sfh
             aux=((fmu_sfh(i_sfh)-fmu_min)/(fmu_max-fmu_min))*nbin_fmu
-            i_fmu_sfh(i_sfh) = 1 + dint(aux)
+            ibin=1 + dint(aux)
+            i_fmu_sfh(i_sfh) = max(1,min(ibin,nbin_fmu))
 
             aux = ((mu(i_sfh)-mu_min)/(mu_max-mu_min)) * nbin_mu
-            i_mu(i_sfh) = 1 + dint(aux)
+            ibin=1 + dint(aux)
+            i_mu(i_sfh) = max(1,min(ibin,nbin_mu))
 
             aux=((tauv(i_sfh)-tv_min)/(tv_max-tv_min)) * nbin_tv
-            i_tauv(i_sfh) = 1 + dint(aux)
+            ibin=1 + dint(aux)
+            i_tauv(i_sfh) = max(1,min(ibin,nbin_tv))
 
             aux=((tvism(i_sfh)-tv_min)/(tv_max-tv_min)) * nbin_tv
-            i_tvism(i_sfh) = 1 + dint(aux)
+            ibin=1 + dint(aux)
+            i_tvism(i_sfh) = max(1,min(ibin,nbin_tv))
 
             if (lssfr(i_sfh).lt.ssfr_min) then
                lssfr(i_sfh)=ssfr_min !set small sfrs to sfr_min
             endif
             aux=((lssfr(i_sfh)-ssfr_min)/(ssfr_max-ssfr_min))* nbin_ssfr
-            i_lssfr(i_sfh) = 1 + dint(aux)
+            ibin=1 + dint(aux)
+            i_lssfr(i_sfh) = max(1,min(ibin,nbin_sfr))
          enddo
 
          do i_ir=1, n_ir
             aux=((fmu_ir(i_ir)-fmu_min)/(fmu_max-fmu_min)) * nbin_fmu
-            i_fmu_ir(i_ir) = 1+dint(aux)
+            ibin=1 + dint(aux)
+            i_fmu_ir(i_ir) = max(1,min(ibin,nbin_fmu))
 
             aux=((fmu_ism(i_ir)-fmuism_min)/(fmuism_max-fmuism_min))*nbin_fmu_ism
-            i_fmu_ism(i_ir) = 1+dint(aux)
+            ibin=1 + dint(aux)
+            i_fmu_ism(i_ir) = max(1,min(ibin,nbin_fmu_ism))
 
             aux=((tbg1(i_ir)-tbg1_min)/(tbg1_max-tbg1_min))* nbin_tbg1
-            i_tbg1(i_ir) = 1+dint(aux)
+            ibin=1 + dint(aux)
+            i_tbg1(i_ir) = max(1,min(ibin,nbin_tbg1))
 
             aux=((tbg2(i_ir)-tbg2_min)/(tbg2_max-tbg2_min))* nbin_tbg2
-            i_tbg2(i_ir) = 1+dint(aux)
+            ibin=1 + dint(aux)
+            i_tbg2(i_ir) = max(1,min(ibin,nbin_tbg2))
 
             aux=((xi1(i_ir)-xi_min)/(xi_max-xi_min)) * nbin_xi
-            i_xi1(i_ir) = 1+dint(aux)
+            ibin=1 + dint(aux)
+            i_xi1(i_ir) = max(1,min(ibin,nbin_xi))
 
             aux=((xi2(i_ir)-xi_min)/(xi_max-xi_min)) * nbin_xi
-            i_xi2(i_ir) = 1+dint(aux)
+            ibin=1 + dint(aux)
+            i_xi2(i_ir) = max(1,min(ibin,nbin_xi))
 
             aux=((xi3(i_ir)-xi_min)/(xi_max-xi_min)) * nbin_xi
-            i_xi3(i_ir) = 1+dint(aux)
+            ibin=1 + dint(aux)
+            i_xi3(i_ir) = max(1,min(ibin,nbin_xi))
          enddo
 
 c     ---------------------------------------------------------------------------
@@ -680,7 +696,8 @@ c     Compute scaling factor "a" - this is the number that minimizes chi^2
                   do k=1,nfilt
                      if (flux_obs(i_gal,k).gt.0) then
                         num=num+(flux_mod(k)*flux_obs(i_gal,k)*w(i_gal,k))
-                        den=den+((flux_mod(k)**2)*w(i_gal,k))
+                        den=den+((flux_mod(k)*flux_mod(k))*w(i_gal,k))
+c                       den=den+((flux_mod(k)**2)*w(i_gal,k))
                      endif
                   enddo
                   a=num/den
@@ -688,7 +705,9 @@ c     Compute chi^2 goodness-of-fit
                   do k=1,nfilt_sfh
                      if (flux_obs(i_gal,k).gt.0) then
                         chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
-     +                       **2)*w(i_gal,k))
+     +                       *(flux_obs(i_gal,k)-(a*flux_mod(k))))*w(i_gal,k))
+c                       chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+c    +                       **2)*w(i_gal,k))
                         chi2_opt=chi2
                      endif
                   enddo
@@ -697,9 +716,11 @@ c     Compute chi^2 goodness-of-fit
                      do k=nfilt_sfh+1,nfilt
                         if (flux_obs(i_gal,k).gt.0) then
                            chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
-     +                          **2)*w(i_gal,k))
-                           chi2_ir=chi2_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
-     +                          **2)*w(i_gal,k))
+     +                          *(flux_obs(i_gal,k)-(a*flux_mod(k))))*w(i_gal,k))
+c                          chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+c    +                          **2)*w(i_gal,k))
+c                          chi2_ir=chi2_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+c    +                          **2)*w(i_gal,k))
                         endif
                      enddo
                   endif
@@ -716,7 +737,18 @@ c     Best fit model
                      ir_sav=i_ir
                      a_sav=a
                      chi2_sav_opt=chi2_new_opt
-                     chi2_sav_ir=chi2_new_ir
+c     Only Compute chi2_sav_ir if needed.
+                     chi2_sav_ir=0.
+                     if (chi2.lt.600.) then
+                        do k=nfilt_sfh+1,nfilt
+                           if (flux_obs(i_gal,k).gt.0) then
+                              chi2_sav_ir=chi2_sav_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+     +                             *(flux_obs(i_gal,k)-(a*flux_mod(k))))*w(i_gal,k))
+c                             chi2_sav_ir=chi2_sav_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+c    +                             **2)*w(i_gal,k))
+                           endif
+                        enddo
+                     endif
                   endif
 
 c     MARGINAL PROBABILITY DENSITY FUNCTIONS
@@ -725,30 +757,8 @@ c     and compute probability histogram
 c     (normalize only in the end of the big loop)
 c     for now just add up probabilities in each bin
 
-c     f_mu (SFH)
-                  ibin= i_fmu_sfh(i_sfh)
-                  ibin = max(1,min(ibin,nbin_fmu))
-                  psfh(ibin)=psfh(ibin)+prob
-c     f_mu (IR)
-                  ibin = i_fmu_ir(i_ir)
-                  ibin = max(1,min(ibin,nbin_fmu))
-                  pir(ibin)=pir(ibin)+prob
-c     mu
-                  ibin= i_mu(i_sfh)
-                  ibin = max(1,min(ibin,nbin_mu))
-                  pmu(ibin)=pmu(ibin)+prob
-c     tauV
-                  ibin= i_tauv(i_sfh)
-                  ibin = max(1,min(ibin,nbin_tv))
-                  ptv(ibin)=ptv(ibin)+prob
-c     tvism
-                  ibin= i_tvism(i_sfh)
-                  ibin = max(1,min(ibin,nbin_tv))
-                  ptvism(ibin)=ptvism(ibin)+prob
-c     sSFR_0.1Gyr
-                  ibin= i_lssfr(i_sfh)
-                  ibin = max(1,min(ibin,nbin_sfr))
-                  pssfr(ibin)=pssfr(ibin)+prob
+                  sfh_hist(i_sfh)=sfh_hist(i_sfh)+prob
+                  ir_hist(i_ir)=ir_hist(i_ir)+prob
 c     Mstar
                   a=dlog10(a)
                   aux=((a-a_min)/(a_max-a_min)) * nbin_a
@@ -767,32 +777,9 @@ c     Ldust
                   ibin=1+dint(aux)
                   ibin = max(1,min(ibin,nbin_ld))
                   pldust(ibin)=pldust(ibin)+prob
-c     xi_C^tot
-                  ibin= i_fmu_ism(i_ir)
-                  ibin = max(1,min(ibin,nbin_fmu_ism))
-                  pism(ibin)=pism(ibin)+prob
-c     T_C^ISM
-                  ibin= i_tbg1(i_ir)
-                  ibin = max(1,min(ibin,nbin_tbg1))
-                  ptbg1(ibin)=ptbg1(ibin)+prob
-c     T_W^BC
-                  ibin= i_tbg2(i_ir)
-                  ibin = max(1,min(ibin,nbin_tbg2))
-                  ptbg2(ibin)=ptbg2(ibin)+prob
-c     xi_PAH^tot
-                  ibin= i_xi1(i_ir)
-                  ibin = max(1,min(ibin,nbin_xi))
-                  pxi1(ibin)=pxi1(ibin)+prob
-c     xi_MIR^tot
-                  ibin= i_xi2(i_ir)
-                  ibin = max(1,min(ibin,nbin_xi))
-                  pxi2(ibin)=pxi2(ibin)+prob
-c     xi_W^tot
-                  ibin= i_xi3(i_ir)
-                  ibin = max(1,min(ibin,nbin_xi))
-                  pxi3(ibin)=pxi3(ibin)+prob
-c     Mdust
-                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldust(i_sfh)*10.0**a)
+c     Mdust. Replaced 10.0**a with exp(a*log(10)) using a constant for log(10).
+                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldust(i_sfh)*exp(a*2.30258509299404568402D0))
+c                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldust(i_sfh)*10.0**a)
                   aux=((lmdust(i_ir)-md_min)/(md_max-md_min))*nbin_md
                   ibin=1+dint(aux)
                   ibin = max(1,min(ibin,nbin_md))
@@ -802,6 +789,37 @@ c     Mdust
             ENDDO               !loop in i_ir
          ENDDO                  !loop in i_sfh
 
+c Expand sfh_hist
+         do i_sfh=1,n_sfh
+c     f_mu (SFH)
+            psfh(i_fmu_sfh(i_sfh))=psfh(i_fmu_sfh(i_sfh))+sfh_hist(i_sfh)
+c     mu
+            pmu(i_mu(i_sfh))=pmu(i_mu(i_sfh))+sfh_hist(i_sfh)
+c     tauV
+            ptv(i_tauv(i_sfh))=ptv(i_tauv(i_sfh))+sfh_hist(i_sfh)
+c     tvism
+            ptvism(i_tvism(i_sfh))=ptvism(i_tvism(i_sfh))+sfh_hist(i_sfh)
+c     sSFR_0.1Gyr
+            pssfr(i_lssfr(i_sfh))=pssfr(i_lssfr(i_sfh))+sfh_hist(i_sfh)
+         enddo
+         
+         do i_ir=1,n_ir
+c     f_mu (IR)
+            pir(i_fmu_ir(i_ir))=pir(i_fmu_ir(i_ir))+ir_hist(i_ir)
+c     xi_C^tot
+            pism(i_fmu_ism(i_ir))=pism(i_fmu_ism(i_ir))+ir_hist(i_ir)
+c     T_C^ISM
+            ptbg1(i_tbg1(i_ir))=ptbg1(i_tbg1(i_ir))+ir_hist(i_ir)
+c     T_W^BC
+            ptbg2(i_tbg2(i_ir))=ptbg2(i_tbg2(i_ir))+ir_hist(i_ir)
+c     xi_PAH^tot
+            pxi1(i_xi1(i_ir))=pxi1(i_xi1(i_ir))+ir_hist(i_ir)
+c     xi_MIR^tot
+            pxi2(i_xi2(i_ir))=pxi2(i_xi2(i_ir))+ir_hist(i_ir)
+c     xi_W^tot
+            pxi3(i_xi3(i_ir))=pxi3(i_xi3(i_ir))+ir_hist(i_ir)         
+         enddo
+	
 c     Chi2-weighted models: normalize to total probability ptot
          write(*,*) 'Number of random SFH models:       ', n_sfh
          write(*,*) 'Number of IR dust emission models: ', n_ir
