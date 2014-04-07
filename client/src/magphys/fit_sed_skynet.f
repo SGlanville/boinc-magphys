@@ -185,6 +185,8 @@ c     --------------------------------------------------------------------------
       character*100 buffer1, buffer2
       logical found_old_entry
       integer gal_number_found
+      integer nfilt_dust,n_irbysfh
+      real*8 ldusta
 
       numargs = iargc ( )
       if (numargs .eq. 0) then
@@ -366,6 +368,7 @@ c     --------------------------------------------------------------------------
                nfilt_mix=nfilt_mix+1
             endif
          enddo
+         nfilt_dust=nfilt_ir+nfilt_mix
 
          write(*,*) '   '
          write(*,*) 'At this redshift: '
@@ -667,6 +670,7 @@ c     Check progress of the fit...
             endif
 
             df=0.15             !fmu_opt=fmu_ir +/- dfmu
+            n_irbysfh=0
 
 c     Search for the IR models with f_mu within the range set by df
             DO i_ir=1,n_ir
@@ -680,76 +684,83 @@ c     Search for the IR models with f_mu within the range set by df
                if (abs(fmu_sfh(i_sfh)-fmu_ir(i_ir)).le.df) then
 
                   n_models=n_models+1 !to keep track of total number of combinations
+                  n_irbysfh=n_irbysfh+1
 
+c     Only Compute flux_mod, chi, prob, bestfit Once per SFH, if no Dust Filters.
+                  if ( (nfilt_dust.ne.0).or.((nfilt_dust.eq.0).and.(n_irbysfh.eq.1)) ) then
+            	
 c     Build the model flux array by adding SFH & IR
-                  do k=1,nfilt_sfh-nfilt_mix
-                     flux_mod(k)=flux_sfh(i_sfh,k)
-                  enddo
-                  do k=nfilt_sfh-nfilt_mix+1,nfilt_sfh
-                     flux_mod(k)=flux_sfh(i_sfh,k)+
-     +                    ldust(i_sfh)*flux_ir(i_ir,k-nfilt_sfh+nfilt_mix) !k-(nfilt_sfh-nfilt_mix)
-                  enddo
-                  do k=nfilt_sfh+1,nfilt
-                     flux_mod(k)=ldust(i_sfh)*flux_ir(i_ir,k-nfilt_sfh+nfilt_mix)
-                  enddo
+                     do k=1,nfilt_sfh-nfilt_mix
+                        flux_mod(k)=flux_sfh(i_sfh,k)
+                     enddo
+                     do k=nfilt_sfh-nfilt_mix+1,nfilt_sfh
+                        flux_mod(k)=flux_sfh(i_sfh,k)+
+     +                       ldust(i_sfh)*flux_ir(i_ir,k-nfilt_sfh+nfilt_mix) !k-(nfilt_sfh-nfilt_mix)
+                     enddo
+                     do k=nfilt_sfh+1,nfilt
+                        flux_mod(k)=ldust(i_sfh)*flux_ir(i_ir,k-nfilt_sfh+nfilt_mix)
+                     enddo
 c     Compute scaling factor "a" - this is the number that minimizes chi^2
-                  do k=1,nfilt
-                     if (flux_obs(i_gal,k).gt.0) then
-                        num=num+(flux_mod(k)*flux_obs(i_gal,k)*w(i_gal,k))
-                        den=den+((flux_mod(k)*flux_mod(k))*w(i_gal,k))
+                     do k=1,nfilt
+                        if (flux_obs(i_gal,k).gt.0) then
+                           num=num+(flux_mod(k)*flux_obs(i_gal,k)*w(i_gal,k))
+                           den=den+((flux_mod(k)*flux_mod(k))*w(i_gal,k))
 c                       den=den+((flux_mod(k)**2)*w(i_gal,k))
                      endif
-                  enddo
-                  a=num/den
+                     enddo
+                     a=num/den
 c     Compute chi^2 goodness-of-fit
-                  do k=1,nfilt_sfh
-                     if (flux_obs(i_gal,k).gt.0) then
-                        chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
-     +                       *(flux_obs(i_gal,k)-(a*flux_mod(k))))*w(i_gal,k))
-c                       chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
-c    +                       **2)*w(i_gal,k))
-                        chi2_opt=chi2
-                     endif
-                  enddo
-
-                  if (chi2.lt.600.) then
-                     do k=nfilt_sfh+1,nfilt
+                     do k=1,nfilt_sfh
                         if (flux_obs(i_gal,k).gt.0) then
                            chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
      +                          *(flux_obs(i_gal,k)-(a*flux_mod(k))))*w(i_gal,k))
 c                          chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
-c    +                          **2)*w(i_gal,k))
-c                          chi2_ir=chi2_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
-c    +                          **2)*w(i_gal,k))
+c    +                       **2)*w(i_gal,k))
+                           chi2_opt=chi2
                         endif
-                     enddo
-                  endif
-c     Probability
-                  prob=dexp(-0.5*chi2)
-                  ptot=ptot+prob
-c     Best fit model
-                  chi2_new=chi2
-                  chi2_new_opt=chi2_opt
-                  chi2_new_ir=chi2_ir
-                  if (chi2_new.lt.chi2_sav) then
-                     chi2_sav=chi2_new
-                     sfh_sav=i_sfh
-                     ir_sav=i_ir
-                     a_sav=a
-                     chi2_sav_opt=chi2_new_opt
-c     Only Compute chi2_sav_ir if needed.
-                     chi2_sav_ir=0.
+                      enddo
+
                      if (chi2.lt.600.) then
                         do k=nfilt_sfh+1,nfilt
                            if (flux_obs(i_gal,k).gt.0) then
-                              chi2_sav_ir=chi2_sav_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+                              chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
      +                             *(flux_obs(i_gal,k)-(a*flux_mod(k))))*w(i_gal,k))
-c                             chi2_sav_ir=chi2_sav_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+c                             chi2=chi2+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+c    +                             **2)*w(i_gal,k))
+c                             chi2_ir=chi2_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
 c    +                             **2)*w(i_gal,k))
                            endif
                         enddo
                      endif
-                  endif
+c     Probability
+                     prob=dexp(-0.5*chi2)
+c     Best fit model
+                     chi2_new=chi2
+                     chi2_new_opt=chi2_opt
+                     chi2_new_ir=chi2_ir
+                     if (chi2_new.lt.chi2_sav) then
+                        chi2_sav=chi2_new
+                        sfh_sav=i_sfh
+                        ir_sav=i_ir
+                        a_sav=a
+                        chi2_sav_opt=chi2_new_opt
+c     Only Compute chi2_sav_ir if needed.
+                        chi2_sav_ir=0.
+                        if (chi2.lt.600.) then
+                           do k=nfilt_sfh+1,nfilt
+                              if (flux_obs(i_gal,k).gt.0) then
+                                 chi2_sav_ir=chi2_sav_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+     +                                *(flux_obs(i_gal,k)-(a*flux_mod(k))))*w(i_gal,k))
+c                                chi2_sav_ir=chi2_sav_ir+(((flux_obs(i_gal,k)-(a*flux_mod(k)))
+c    +                                   **2)*w(i_gal,k))
+                              endif
+                           enddo
+                        endif
+                     endif
+
+                     a=dlog10(a)
+                     ldusta=ldust(i_sfh)*exp(a*2.30258509299404568402D0) !Part of MDust
+                  endif             !nfilt_dust condition
 
 c     MARGINAL PROBABILITY DENSITY FUNCTIONS
 c     Locate each value on the corresponding histogram bin
@@ -757,28 +768,33 @@ c     and compute probability histogram
 c     (normalize only in the end of the big loop)
 c     for now just add up probabilities in each bin
 
-                  sfh_hist(i_sfh)=sfh_hist(i_sfh)+prob
-                  ir_hist(i_ir)=ir_hist(i_ir)+prob
+                  if (nfilt_dust.ne.0) then !has dust must calc for each i_ir since prob will change.
+                     ptot=ptot+prob
+                     sfh_hist(i_sfh)=sfh_hist(i_sfh)+prob
 c     Mstar
-                  a=dlog10(a)
-                  aux=((a-a_min)/(a_max-a_min)) * nbin_a
-                  ibin=1+dint(aux)
-                  ibin = max(1,min(ibin,nbin_a))
-                  pa(ibin)=pa(ibin)+prob
+                     aux=((a-a_min)/(a_max-a_min)) * nbin_a
+                     ibin=1+dint(aux)
+                     ibin = max(1,min(ibin,nbin_a))
+                     pa(ibin)=pa(ibin)+prob
 c     SFR_0.1Gyr
-                  aux=((lssfr(i_sfh)+a-sfr_min)/(sfr_max-sfr_min))
-     +                 * nbin_sfr
-                  ibin= 1+dint(aux)
-                  ibin = max(1,min(ibin,nbin_sfr))
-                  psfr(ibin)=psfr(ibin)+prob
+                     aux=((lssfr(i_sfh)+a-sfr_min)/(sfr_max-sfr_min))
+     +                    * nbin_sfr
+                     ibin= 1+dint(aux)
+                     ibin = max(1,min(ibin,nbin_sfr))
+                     psfr(ibin)=psfr(ibin)+prob
 c     Ldust
-                  aux=((logldust(i_sfh)+a-ld_min)/(ld_max-ld_min))
-     +                 * nbin_ld
-                  ibin=1+dint(aux)
-                  ibin = max(1,min(ibin,nbin_ld))
-                  pldust(ibin)=pldust(ibin)+prob
+                     aux=((logldust(i_sfh)+a-ld_min)/(ld_max-ld_min))
+     +                    * nbin_ld
+                     ibin=1+dint(aux)
+                     ibin = max(1,min(ibin,nbin_ld))
+                     pldust(ibin)=pldust(ibin)+prob
+
+                  endif         !has dust condition
+
+                  ir_hist(i_ir)=ir_hist(i_ir)+prob
+                  
 c     Mdust. Replaced 10.0**a with exp(a*log(10)) using a constant for log(10).
-                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldust(i_sfh)*exp(a*2.30258509299404568402D0))
+                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldusta)
 c                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldust(i_sfh)*10.0**a)
                   aux=((lmdust(i_ir)-md_min)/(md_max-md_min))*nbin_md
                   ibin=1+dint(aux)
@@ -787,6 +803,31 @@ c                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldust(i_sfh)*10.0**a)
 
                endif            !df condition
             ENDDO               !loop in i_ir
+            
+            if (nfilt_dust.eq.0) then !has no dust, Save prob * n_irbysfh
+
+               ptot=ptot+(prob*n_irbysfh)
+               sfh_hist(i_sfh)=sfh_hist(i_sfh)+(prob*n_irbysfh)
+c     Mstar
+               aux=((a-a_min)/(a_max-a_min)) * nbin_a
+               ibin=1+dint(aux)
+               ibin = max(1,min(ibin,nbin_a))
+               pa(ibin)=pa(ibin)+(prob*n_irbysfh)
+c     SFR_0.1Gyr
+               aux=((lssfr(i_sfh)+a-sfr_min)/(sfr_max-sfr_min))
+     +              * nbin_sfr
+               ibin= 1+dint(aux)
+               ibin = max(1,min(ibin,nbin_sfr))
+               psfr(ibin)=psfr(ibin)+(prob*n_irbysfh)
+c     Ldust
+               aux=((logldust(i_sfh)+a-ld_min)/(ld_max-ld_min))
+     +              * nbin_ld
+               ibin=1+dint(aux)
+               ibin = max(1,min(ibin,nbin_ld))
+               pldust(ibin)=pldust(ibin)+(prob*n_irbysfh)
+
+            endif         !has no dust condition
+            
          ENDDO                  !loop in i_sfh
 
 c Expand sfh_hist
@@ -1935,5 +1976,6 @@ c     accumulate sum of expansion
 
  61                  return
                      end
+
 
 
