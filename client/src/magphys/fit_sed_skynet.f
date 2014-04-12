@@ -77,7 +77,7 @@ c     model libraries, parameters, etc.
       real*8 ldust(nmod),mstr1(nmod),logldust(nmod),lssfr(nmod)
       real*8 flux_ir(nmod,nmax),tvism(nmod),tauv(nmod),mu(nmod)
       real*8 tbg1(nmod),tbg2(nmod),xi1(nmod),xi2(nmod),xi3(nmod)
-      real*8 fmu_ism(nmod),mdust(nmod),lmdust(nmod)
+      real*8 fmu_ism(nmod),mdust(nmod),lmdust(nmod),logmdust(nmod)
 c     chi2, scaling factors, etc.
       real*8 flux_mod(nmax)
       real*8 chi2,chi2_sav,chi2_new,df
@@ -186,7 +186,7 @@ c     --------------------------------------------------------------------------
       logical found_old_entry
       integer gal_number_found
       integer nfilt_dust,n_irbysfh
-      real*8 ldusta
+      real*8 logldusta
 
       numargs = iargc ( )
       if (numargs .eq. 0) then
@@ -454,7 +454,8 @@ c     IR model parameters
                xi1(i_ir)=fprop_ir(i_ir,5)          ! xi_PAH^BC Ld(PAH)/Ld(BC)
                xi2(i_ir)=fprop_ir(i_ir,6)          ! xi_MIR^BC Ld(MIR)/Ld(BC)
                xi3(i_ir)=fprop_ir(i_ir,7)          ! xi_W^BC Ld(warm)/Ld(BC)
-               mdust(i_ir)=fprop_ir(i_ir,8) !dust mass
+               mdust(i_ir)=fprop_ir(i_ir,8)        !dust mass
+               logmdust(i_ir)=dlog10(mdust(i_ir))  !dust mass log10
 c     .lbr contains absolute AB magnitudes -> convert to fluxes Fnu in Lo/Hz
 c     Convert all magnitudes to Lo/Hz
                do k=1,nfilt_ir
@@ -759,7 +760,7 @@ c    +                                   **2)*w(i_gal,k))
                      endif
 
                      a=dlog10(a)
-                     ldusta=ldust(i_sfh)*exp(a*2.30258509299404568402D0) !Part of MDust
+                     logldusta=logldust(i_sfh)+dlog10(exp(a*2.30258509299404568402D0)) !Part of MDust
                   endif             !nfilt_dust condition
 
 c     MARGINAL PROBABILITY DENSITY FUNCTIONS
@@ -794,7 +795,8 @@ c     Ldust
                   ir_hist(i_ir)=ir_hist(i_ir)+prob
                   
 c     Mdust. Replaced 10.0**a with exp(a*log(10)) using a constant for log(10).
-                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldusta)
+                  lmdust(i_ir)=logmdust(i_ir)+logldusta
+c                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldusta)
 c                  lmdust(i_ir)=dlog10(mdust(i_ir)*ldust(i_sfh)*10.0**a)
                   aux=((lmdust(i_ir)-md_min)/(md_max-md_min))*nbin_md
                   ibin=1+dint(aux)
